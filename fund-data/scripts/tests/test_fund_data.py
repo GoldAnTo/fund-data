@@ -1212,5 +1212,90 @@ class FundDataStoreTests(unittest.TestCase):
             self.assertEqual({r["fund_code"] for r in incomplete}, {"110022", "000015"})
 
 
+class SchemaMigrationTests(unittest.TestCase):
+    """``FundDataStore.ensure_schema`` runs a registered migration
+    list and records every applied version in ``schema_migrations``
+    plus ``PRAGMA user_version``. Old DBs (pre-registry) upgrade
+    transparently; fresh DBs apply every migration once on first
+    open; the whole flow is idempotent.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self.tmp.name) / "test.sqlite"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_ensure_schema_is_idempotent(self) -> None:
+        """Running ``ensure_schema`` twice must not re-apply
+        migrations and must not bump ``user_version``."""
+        fund_data.FundDataStore(str(self.db)).ensure_schema()
+        with sqlite3.connect(str(self.db)) as conn:
+            first_version = conn.execute("PRAGMA user_version").fetchone()[0]
+            first_rows = conn.execute(
+                "SELECT COUNT(*) FROM schema_migrations"
+            ).fetchone()[0]
+
+        fund_data.FundDataStore(str(self.db)).ensure_schema()
+        with sqlite3.connect(str(self.db)) as conn:
+            second_version = conn.execute("PRAGMA user_version").fetchone()[0]
+            second_rows = conn.execute(
+                "SELECT COUNT(*) FROM schema_migrations"
+            ).fetchone()[0]
+
+        self.assertEqual(first_version, fund_data.FUND_DATA_SCHEMA_VERSION)
+        self.assertEqual(first_version, second_version)
+        self.assertEqual(first_rows, second_rows)
+        self.assertEqual(first_rows, fund_data.FUND_DATA_SCHEMA_VERSION)
+
+    def test_migrations_skip_already_applied(self) -> None:
+        """A v0.2-shaped DB (user_version=2) must skip the first
+        two migrations and only run the remaining ones."""
+        # Bootstrap: build the schema, then rewind user_version to
+        # simulate an "old" DB that already had migrations 1 and 2
+        # applied.
+        fund_data.FundDataStore(str(self.db)).ensure_schema()
+        with sqlite3.connect(str(self.db)) as conn:
+            # Delete the audit log for migrations 3+ and rewind
+            # user_version. This mimics an out-of-band database
+            # that was upgraded by the old ``_ensure_column`` calls
+            # but never recorded into the registry.
+            conn.execute("DELETE FROM schema_migrations WHERE version > 2")
+            conn.execute("PRAGMA user_version = 2")
+
+        fund_data.FundDataStore(str(self.db)).ensure_schema()
+        with sqlite3.connect(str(self.db)) as conn:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            rows = sorted(
+                r[0] for r in conn.execute("SELECT version FROM schema_migrations")
+            )
+        self.assertEqual(version, fund_data.FUND_DATA_SCHEMA_VERSION)
+        self.assertEqual(rows, list(range(1, fund_data.FUND_DATA_SCHEMA_VERSION + 1)))
+
+    def test_fresh_db_applies_every_migration_once(self) -> None:
+        """A brand-new DB (no user_version) should end up with
+        user_version == FUND_DATA_SCHEMA_VERSION and a row in
+        schema_migrations for every migration."""
+        fund_data.FundDataStore(str(self.db)).ensure_schema()
+        with sqlite3.connect(str(self.db)) as conn:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            rows = sorted(
+                r[0] for r in conn.execute("SELECT version FROM schema_migrations")
+            )
+        self.assertEqual(version, fund_data.FUND_DATA_SCHEMA_VERSION)
+        self.assertEqual(rows, list(range(1, fund_data.FUND_DATA_SCHEMA_VERSION + 1)))
+        # Every column the four migrations add must exist now.
+        with sqlite3.connect(str(self.db)) as conn:
+            for table, column in [
+                ("industry_allocations", "market_value"),
+                ("fee_structures", "fee_text"),
+                ("fee_structures", "discount_fee"),
+                ("fee_structures", "discount_fee_text"),
+            ]:
+                cols = {row[1] for row in conn.execute(f"pragma table_info({table})")}
+                self.assertIn(column, cols, f"{table}.{column} missing after migration")
+
+
 if __name__ == "__main__":
     unittest.main()

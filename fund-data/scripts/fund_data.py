@@ -29,8 +29,86 @@ PROVIDER_INVESTODAY = "investoday"
 PROVIDER_TUSHARE = "tushare"
 
 
+def default_db_path() -> Path:
+    configured = os.environ.get("FUND_DATA_DB")
+    if configured:
+        return Path(configured)
+    try:
+        from . import fund_cloud
+    except ImportError:  # pragma: no cover - direct script execution
+        try:
+            import fund_cloud  # type: ignore
+        except ImportError:
+            return DEFAULT_DB_PATH
+    cloud_db = fund_cloud.current_db_path()
+    return cloud_db or DEFAULT_DB_PATH
+
+
 def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+# --- schema migrations -----------------------------------------------------
+#
+# Each entry is ``(version, callable)``. ``ensure_schema`` reads
+# ``PRAGMA user_version`` and applies every migration whose version
+# is greater than the current user_version, in ascending order. After
+# each successful migration it records the version in
+# ``schema_migrations`` and bumps the pragma.
+#
+# Adding a new migration:
+#   1. Append ``(N, _migration_NNN_short_description)`` to MIGRATIONS.
+#   2. Add a regression test in test_fund_data.py that runs
+#      ``ensure_schema`` against a v(N-1) DB and asserts the new
+#      shape.
+#   3. Bump FUND_DATA_SCHEMA_VERSION in any consumer code that caches
+#      the version (currently nothing does).
+#
+# Never renumber or remove an existing migration — old DBs depend on
+# each version being applied exactly once, in order.
+
+
+def _migration_001_add_industry_allocations_market_value(conn: sqlite3.Connection) -> None:
+    """v1: add ``industry_allocations.market_value`` for AkShare's
+    industry weighting breakdown."""
+    columns = {row["name"] for row in conn.execute("pragma table_info(industry_allocations)")}
+    if "market_value" not in columns:
+        conn.execute("alter table industry_allocations add column market_value real")
+
+
+def _migration_002_add_fee_structures_fee_text(conn: sqlite3.Connection) -> None:
+    """v2: add ``fee_structures.fee_text`` so the AkShare page scraper
+    can persist its human-readable fee strings alongside the decimal
+    value."""
+    columns = {row["name"] for row in conn.execute("pragma table_info(fee_structures)")}
+    if "fee_text" not in columns:
+        conn.execute("alter table fee_structures add column fee_text text")
+
+
+def _migration_003_add_fee_structures_discount_fee(conn: sqlite3.Connection) -> None:
+    """v3: add ``fee_structures.discount_fee`` to carry the discounted
+    fee (e.g. promo rate) alongside the list price."""
+    columns = {row["name"] for row in conn.execute("pragma table_info(fee_structures)")}
+    if "discount_fee" not in columns:
+        conn.execute("alter table fee_structures add column discount_fee real")
+
+
+def _migration_004_add_fee_structures_discount_fee_text(conn: sqlite3.Connection) -> None:
+    """v4: add ``fee_structures.discount_fee_text`` to carry the
+    human-readable discounted fee string."""
+    columns = {row["name"] for row in conn.execute("pragma table_info(fee_structures)")}
+    if "discount_fee_text" not in columns:
+        conn.execute("alter table fee_structures add column discount_fee_text text")
+
+
+MIGRATIONS: list[tuple[int, Any]] = [
+    (1, _migration_001_add_industry_allocations_market_value),
+    (2, _migration_002_add_fee_structures_fee_text),
+    (3, _migration_003_add_fee_structures_discount_fee),
+    (4, _migration_004_add_fee_structures_discount_fee_text),
+]
+
+FUND_DATA_SCHEMA_VERSION = max(version for version, _fn in MIGRATIONS)
 
 
 def normalize_fund_code(value: str) -> str:
@@ -1723,7 +1801,7 @@ def build_providers_full(
 
 class FundDataStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
-        default_path = Path(os.environ.get("FUND_DATA_DB") or DEFAULT_DB_PATH)
+        default_path = default_db_path()
         self.db_path = Path(db_path) if db_path is not None else default_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.ensure_schema()
@@ -1899,11 +1977,43 @@ class FundDataStore:
                     fetched_at text not null,
                     primary key (manager_name, company, current_fund_codes)
                 );
+                -- Schema migration registry. Bumped by apply_migrations()
+                -- below. The version column here is the *audit log*;
+                -- PRAGMA user_version is the *fast read* of the same
+                -- value (read on every open).
+                create table if not exists schema_migrations (
+                    version integer primary key,
+                    applied_at text not null
+                );
                 """)
-            self._ensure_column(conn, "industry_allocations", "market_value", "real")
-            self._ensure_column(conn, "fee_structures", "fee_text", "text")
-            self._ensure_column(conn, "fee_structures", "discount_fee", "real")
-            self._ensure_column(conn, "fee_structures", "discount_fee_text", "text")
+            self._apply_migrations(conn)
+
+    def _apply_migrations(self, conn: sqlite3.Connection) -> None:
+        """Run every migration in :data:`MIGRATIONS` whose version is
+        greater than the database's current ``PRAGMA user_version``.
+
+        A failed migration aborts the whole ``ensure_schema`` call —
+        the migration that errored has its transaction rolled back,
+        so re-running ``ensure_schema`` retries the failed migration
+        (the prior version remains as ``user_version``).
+        """
+        current = conn.execute("PRAGMA user_version").fetchone()[0]
+        for version, fn in MIGRATIONS:
+            if version <= current:
+                # Already applied (either this is a fresh DB and the
+                # version is < the first migration, or an old DB
+                # that's been upgraded before).
+                continue
+            try:
+                fn(conn)
+            except Exception:
+                logger.exception("schema migration %d failed", version)
+                raise
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (version, utc_now()),
+            )
+            conn.execute(f"PRAGMA user_version = {int(version)}")
 
     def _ensure_column(
         self, conn: sqlite3.Connection, table: str, column: str, column_type: str
