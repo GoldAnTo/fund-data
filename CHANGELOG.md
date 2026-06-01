@@ -4,19 +4,34 @@ All notable changes to this project are documented in this file. Versions
 follow [Semantic Versioning](https://semver.org/) once the project reaches
 1.0. The pre-1.0 series (0.x) is allowed to break compat in minor bumps.
 
-## Unreleased
+## 0.2.0 (2026-06-01)
 
-Track of the work in flight toward **0.2.0**. Items land in
-chronological order — see `git log` for the per-commit detail. When
-the Eastmoney resume + akShare bulk sync (both currently running in
-the background) finish, the section below is promoted verbatim to
-`## 0.2.0 (2026-06-XX)` and tagged with `git tag -a v0.2.0`.
+The "data layer is actually production-grade" release. SQLite WAL
+mode, multi-provider backfill with crash recovery, the Investoday
+profile sync, the akShare bulk sync (runnable standalone so the main
+DB never holds a long write lock), the MCP stdio server for AI
+agents, and the contributor / governance hygiene (CHANGELOG /
+CONTRIBUTING / SECURITY / COC / Issue & PR templates / dependabot /
+release workflow).
 
-### Headline numbers (live during the 0.2.0 work)
+### Headline numbers (final, post-resume)
 
 - **Profile coverage: 98.87 %** (26,632 / 26,936 funds) — driven by
   `scripts/investoday_profile_sync.py` reading the Investoday
   `/fund/all` catalog. ~40 s for the full universe.
+- **Stock / bond / industry holdings: 49 – 100 %** — the
+  akShare bulk sync raised stock_holdings 0.5 k → 13.2 k
+  (49.06 %), bond_holdings 538 → 15.4 k (57.20 %),
+  industry_allocations 493 → 13.3 k (49.27 %); the backfill
+  defaults keep `industries` at 100 %.
+- **Dividends / splits: 28 % / 2 %** — the akShare sync
+  landed 7.2 k dividend rows and 572 split rows, mostly money-market
+  funds that historically had no dividend history.
+- **Fees: 18.14 %** — AkShare's page-scraped fee endpoint returns
+  empty for the full universe, so the Eastmoney backfill is the
+  only source. Still mostly empty; the cheapest fix is to upgrade
+  the Investoday key to the ¥45 基础包 which unlocks the
+  `/fund/fee-structures` L1 endpoint.
 - **Backfill reliability** — SQLite store now uses
   `journal_mode=WAL` + `busy_timeout=30 s` (commit `0bfe4ac`), and
   `backfill.py` catches `OperationalError: database is locked` and
@@ -24,8 +39,7 @@ the background) finish, the section below is promoted verbatim to
   attempts) before propagating (commit `4b0de13`).
 - **akShare bulk sync** — `scripts/akshare_capability_backfill.py`
   walks the 27 k-fund universe against the AkShare provider for the
-  6 akShare-only capabilities (stock / bond / industry / fee /
-  dividend / split holdings). It can write into a fresh SQLite at
+  6 akShare-only capabilities. It can write into a fresh SQLite at
   `--separate-db PATH` and `ATTACH` + `INSERT OR REPLACE` the rows
   into the main DB at the end, so it never holds the production
   write lock during the long sync.
@@ -43,9 +57,10 @@ the background) finish, the section below is promoted verbatim to
   `backfill.py` and `retry_failures.py`. `fund-cli cloud build-bundle
   / pull / status` adds OSS-hosted query-bundle support (SHA-256
   verified, default cache for MCP/CLI when `FUND_DATA_DB` is unset).
-- **Test count: 95 → 120.** The new test files cover the Investoday
-  provider, akShare `--separate-db` flow, and the backfill
-  `database is locked` retry path.
+- **Test count: 95 → 125.** The new test files cover the Investoday
+  provider, akShare `--separate-db` flow, the backfill `database
+  is locked` retry path, and the test-suite bootstrap that pins
+  `FUND_DATA_DB` to a tmp file.
 
 ### Added
 

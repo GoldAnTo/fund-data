@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fund-data"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local Chinese public fund data base with multi-provider fallback (Eastmoney, AkShare, Tushare, Investoday). Ships as a Codex / Claude / OpenClaw skill."
 readme = "README.md"
 license = { file = "LICENSE" }
