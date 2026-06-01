@@ -1233,16 +1233,12 @@ class SchemaMigrationTests(unittest.TestCase):
         fund_data.FundDataStore(str(self.db)).ensure_schema()
         with sqlite3.connect(str(self.db)) as conn:
             first_version = conn.execute("PRAGMA user_version").fetchone()[0]
-            first_rows = conn.execute(
-                "SELECT COUNT(*) FROM schema_migrations"
-            ).fetchone()[0]
+            first_rows = conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
 
         fund_data.FundDataStore(str(self.db)).ensure_schema()
         with sqlite3.connect(str(self.db)) as conn:
             second_version = conn.execute("PRAGMA user_version").fetchone()[0]
-            second_rows = conn.execute(
-                "SELECT COUNT(*) FROM schema_migrations"
-            ).fetchone()[0]
+            second_rows = conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
 
         self.assertEqual(first_version, fund_data.FUND_DATA_SCHEMA_VERSION)
         self.assertEqual(first_version, second_version)
@@ -1267,9 +1263,7 @@ class SchemaMigrationTests(unittest.TestCase):
         fund_data.FundDataStore(str(self.db)).ensure_schema()
         with sqlite3.connect(str(self.db)) as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            rows = sorted(
-                r[0] for r in conn.execute("SELECT version FROM schema_migrations")
-            )
+            rows = sorted(r[0] for r in conn.execute("SELECT version FROM schema_migrations"))
         self.assertEqual(version, fund_data.FUND_DATA_SCHEMA_VERSION)
         self.assertEqual(rows, list(range(1, fund_data.FUND_DATA_SCHEMA_VERSION + 1)))
 
@@ -1280,9 +1274,7 @@ class SchemaMigrationTests(unittest.TestCase):
         fund_data.FundDataStore(str(self.db)).ensure_schema()
         with sqlite3.connect(str(self.db)) as conn:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
-            rows = sorted(
-                r[0] for r in conn.execute("SELECT version FROM schema_migrations")
-            )
+            rows = sorted(r[0] for r in conn.execute("SELECT version FROM schema_migrations"))
         self.assertEqual(version, fund_data.FUND_DATA_SCHEMA_VERSION)
         self.assertEqual(rows, list(range(1, fund_data.FUND_DATA_SCHEMA_VERSION + 1)))
         # Every column the four migrations add must exist now.

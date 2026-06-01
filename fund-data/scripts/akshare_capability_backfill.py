@@ -181,9 +181,7 @@ def _merge_separate_db(separate_db: Path, main_db: Path) -> dict[str, int]:
                         sep_codes,
                     )
                 # 3) Copy fresh rows from sep into main.
-                cur = main_conn.execute(
-                    f"INSERT INTO main.{table} SELECT * FROM sep.{table}"
-                )
+                cur = main_conn.execute(f"INSERT INTO main.{table} SELECT * FROM sep.{table}")
                 counts[table] = cur.rowcount
             main_conn.execute("COMMIT")
         except Exception:
