@@ -213,7 +213,13 @@ def _sync_one_fund(
             continue
         try:
             if cap == "fee_structures":
-                rows = method(code, indicator=fee_indicator)
+                # ``AkshareProvider.fee_structures`` takes ``indicators`` (plural,
+                # list of indicator names), not ``indicator``. Passing the wrong
+                # kwarg raises ``TypeError`` and the fund gets recorded as a
+                # capability-level failure with zero rows, which is why
+                # ``fee_structures`` has stayed at ~700-fund coverage for the
+                # whole backfill run.
+                rows = method(code, indicators=[fee_indicator])
             elif cap in ("stock_holdings", "bond_holdings", "industry_allocations"):
                 rows = method(code, report_year=report_year)
             else:
