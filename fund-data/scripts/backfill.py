@@ -164,6 +164,7 @@ def backfill(
     max_funds: int | None,
     min_interval_seconds: float | None,
     reset: bool,
+    provider: str = "auto",
 ) -> dict[str, Any]:
     if reset and state_path.is_file():
         state_path.unlink()
@@ -177,6 +178,7 @@ def backfill(
         "report_year": report_year,
         "concurrency": concurrency,
         "batch_size": batch_size,
+        "provider": provider,
         "skip_optional_for_currency": skip_optional_for_currency,
         "fee_indicators": fee_indicators,
     }
@@ -230,7 +232,7 @@ def backfill(
                 page=1,
                 per=200,
                 db_path=db_path,
-                provider="auto",
+                provider=provider,
                 fee_indicators=fee_indicators,
                 report_year=report_year,
                 batch_id=batch_id,
@@ -315,6 +317,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Override the per-call rate-limit interval (default: 0.25 with concurrency, 1.0 serial).",
     )
     parser.add_argument("--reset", action="store_true", help="Discard the saved state and start from scratch")
+    parser.add_argument(
+        "--provider",
+        choices=["auto", "eastmoney", "akshare", "investoday", "tushare"],
+        default="auto",
+        help="Provider chain to use. Default: auto (Eastmoney first then AkShare).",
+    )
     parser.add_argument("--log-level", default="INFO", help="Logging level")
     return parser.parse_args(argv)
 
@@ -343,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
         max_funds=args.max_funds,
         min_interval_seconds=args.min_interval_seconds,
         reset=args.reset,
+        provider=args.provider,
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0

@@ -19,3 +19,34 @@
   Run under cron supervision (see mavis cron self
   backfill-monitor) so a crash or 24h restart can resume from
   `data/backfill_state.json`.
+
+## Update (2026-06-01, evening): Eastmoney-only beats AkShare 8x
+
+The original sweet spot was tuned for AkShare. We then measured:
+
+- `fetch_nav_history` over Eastmoney directly: **0.36 s/fund**
+- `fetch_nav_history` over AkShare: **>6 s/fund** (server throttled
+  the test environment hard after a 16-way burst)
+
+So the actual throughput ceiling is set by **which provider is
+being asked to do the call**, not by `--concurrency`. Concretely:
+
+- `--provider eastmoney --concurrency 8` runs the full 25,961-fund
+  snapshot+NAV sync in **~90 minutes** with 95% success rate.
+- `--provider akshare` is currently unusable for full-coverage
+  backfill (limit your batch to 50 funds at concurrency 2 and expect
+  a 30% failure rate).
+- Tushare (`--provider tushare` with `TUSHARE_TOKEN` set) covers
+  the AkShare-only capabilities (profile/holdings/fees/.../managers)
+  at ~200 calls/min — pass when you have the token.
+
+When you want the full per-fund base row, run **two passes**:
+
+1. `backfill --provider eastmoney` (snapshot + NAV, fast, ~90 min)
+2. `backfill --provider tushare` (profile/holdings/managers/etc.,
+   only the missing datasets land because snapshot/NAV are
+   idempotent)
+
+The Investoday slot (see `PROVIDERS.md`) is the long-term fix:
+apply for an API key, set `INVESTDATA_API_KEY`, and the
+`auto` chain will put Investoday first for every capability.
