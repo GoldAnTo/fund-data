@@ -49,7 +49,8 @@ class CheckAkShareTests(unittest.TestCase):
     def test_venv_missing_reports_error(self):
         result = doctor._check_akshare(Path("/nonexistent/.venv-akshare"))
         self.assertFalse(result["ok"])
-        self.assertIn("missing", result["message"])
+        self.assertIn("not installed", result["message"])
+        self.assertIn("install", result["hint"])
 
     def test_disabled_env_var_short_circuits(self):
         import os

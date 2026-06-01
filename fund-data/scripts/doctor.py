@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import urllib.request
 from pathlib import Path
@@ -70,16 +71,61 @@ def _check_db(db_path: Path) -> dict[str, object]:
 
 
 def _check_akshare(venv: Path) -> dict[str, object]:
-    py = venv / "bin" / "python"
-    if not py.is_file():
-        return {"ok": False, "message": f"venv missing: {venv}", "python": str(py)}
+    """Try three ways to find an AkShare install:
+    1. The running Python's import (most common case for ad-hoc checks).
+    2. The configured venv (default .venv-akshare in the repo).
+    3. The FUND_DATA_AKSHARE_PYTHON env var (any python with akshare).
+    Reports where the install is so the operator can fix the right thing.
+    """
     if os.environ.get("FUND_DATA_DISABLE_AKSHARE") == "1":
         return {"ok": True, "message": "akshare disabled by FUND_DATA_DISABLE_AKSHARE=1"}
+
+    # 1. Current Python.
     try:
         import akshare  # type: ignore  # noqa: F401
-        return {"ok": True, "version": akshare.__version__}
-    except ImportError as exc:
-        return {"ok": False, "message": str(exc), "hint": f"run `{py} -m pip install akshare`"}
+        return {"ok": True, "version": akshare.__version__, "source": "current python"}
+    except ImportError:
+        pass
+
+    # 2. Configured venv (default .venv-akshare).
+    py = venv / "bin" / "python"
+    candidates: list[tuple[str, Path]] = [("venv", py)]
+    override = os.environ.get("FUND_DATA_AKSHARE_PYTHON")
+    if override:
+        candidates.append(("FUND_DATA_AKSHARE_PYTHON", Path(override)))
+
+    for label, candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            version = subprocess.check_output(
+                [str(candidate), "-c", "import akshare; print(akshare.__version__)"],
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            ).decode().strip()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            return {
+                "ok": False,
+                "message": f"akshare not importable in {label} python ({candidate}): {exc}",
+                "hint": f"run `{candidate} -m pip install akshare`",
+            }
+        return {
+            "ok": True,
+            "version": version,
+            "source": f"{label} python ({candidate})",
+            "hint": "run this script with the same python to use AkShare",
+        }
+
+    return {
+        "ok": False,
+        "message": "akshare is not installed in the current python or the configured venv",
+        "hint": (
+            f"install: `python3 -m venv {venv}` then "
+            f"`{venv}/bin/python -m pip install akshare`. "
+            f"Or set FUND_DATA_AKSHARE_PYTHON=/path/to/python-with-akshare."
+        ),
+        "venv": str(venv),
+    }
 
 
 def _check_eastmoney() -> dict[str, object]:
