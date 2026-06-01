@@ -1,3 +1,4 @@
+import io
 import sqlite3
 import tempfile
 import unittest
@@ -9,6 +10,8 @@ sys_path = SCRIPT_DIR
 import sys
 
 sys.path.insert(0, str(sys_path))
+
+import fund_data  # noqa: E402
 
 from scripts import install_skill  # noqa: E402
 
@@ -77,8 +80,8 @@ class CopyIntoTests(unittest.TestCase):
     def test_include_data_cli_enables_copy_data_mode(self):
         calls = []
 
-        def fake_install_one(target, dest, *, copy, data_mode):
-            calls.append((target, dest, copy, data_mode))
+        def fake_install_one(target, dest, *, copy, data_mode, scrub_raw):
+            calls.append((target, dest, copy, data_mode, scrub_raw))
             return "  [codex] OK"
 
         with (
@@ -96,7 +99,148 @@ class CopyIntoTests(unittest.TestCase):
                 0,
             )
 
-        self.assertEqual(calls, [("codex", Path("/tmp/fund-data-skill"), True, "copy")])
+        # scrub_raw defaults to False; --scrub-raw-responses is
+        # opt-in because dropping raw_responses is destructive
+        # on the destination and the IP-leak only matters when
+        # the snapshot leaves the local machine.
+        self.assertEqual(
+            calls,
+            [("codex", Path("/tmp/fund-data-skill"), True, "copy", False)],
+        )
+
+    def test_copy_sqlite_includes_wal_pages(self):
+        """A production ``fund_data.sqlite`` sits on journal_mode=WAL
+        with an open writer. The snapshot must include rows that
+        are still in the WAL (i.e. the destination must be consistent
+        with the source, not stale-checkpoint-only).
+
+        Earlier the test suite called ``_copy_sqlite_database`` on a
+        fresh DB with no live writer, so the WAL-page codepath was
+        never exercised. This test opens two connections on the
+        source, writes through one, then triggers the copy while the
+        other is still alive.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = Path(tmpdir) / "src.sqlite"
+            dst = Path(tmpdir) / "dst.sqlite"
+
+            # Bootstrap a source DB on WAL with one table, one row.
+            with sqlite3.connect(src) as conn:
+                conn.execute("PRAGMA journal_mode = WAL")
+                conn.execute(
+                    "CREATE TABLE waltest (k TEXT PRIMARY KEY, v TEXT)"
+                )
+                conn.execute(
+                    "INSERT INTO waltest VALUES ('k1', 'checkpointed')"
+                )
+                conn.commit()
+
+            # Open a second connection in another writer so the WAL
+            # has at least one uncheckpointed page by the time the
+            # copy runs. SQLite WAL auto-checkpoints at ~1000 pages;
+            # one tiny row is well below that.
+            live = sqlite3.connect(src, timeout=30.0)
+            live.execute(
+                "INSERT INTO waltest VALUES ('k2', 'wal-only')"
+            )
+            live.commit()
+
+            install_skill._copy_sqlite_database(src, dst)
+
+            # The copy must carry the WAL-only row, not just the
+            # checkpointed one. Close the live writer before
+            # asserting so any pending WAL is durably committed.
+            live.close()
+            with sqlite3.connect(dst) as conn:
+                rows = {
+                    k: v
+                    for k, v in conn.execute("SELECT k, v FROM waltest")
+                }
+            self.assertEqual(rows, {"k1": "checkpointed", "k2": "wal-only"})
+
+    def test_scrub_raw_responses_drops_table(self):
+        """With ``scrub_raw=True`` the snapshot must have its
+        ``raw_responses`` table emptied. The table itself stays
+        (so existing queries that select from it still type-check),
+        but every row is gone.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = Path(tmpdir) / "src.sqlite"
+            dst = Path(tmpdir) / "dst.sqlite"
+            fund_data.FundDataStore(str(src)).ensure_schema()
+            with sqlite3.connect(src) as conn:
+                conn.execute(
+                    """INSERT INTO raw_responses
+                          (source, request_key, fetched_at, raw_text)
+                       VALUES (?, ?, ?, ?)""",
+                    (
+                        "eastmoney",
+                        "demo-key",
+                        "2024-01-01T00:00:00+00:00",
+                        "X-Forwarded-For: 203.0.113.1",
+                    ),
+                )
+                conn.commit()
+
+            install_skill._copy_sqlite_database(src, dst, scrub_raw=True)
+
+            with sqlite3.connect(dst) as conn:
+                # Table still exists, but is empty.
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM raw_responses"
+                ).fetchone()[0]
+                self.assertEqual(count, 0)
+
+    def test_include_data_warns_about_ip_leak(self):
+        """`--include-data` without `--scrub-raw-responses` must print
+        a `::warning::` GitHub Actions–style note pointing the user
+        at the IP-leak risk documented in SECURITY.md. The note has
+        to be impossible to miss so a CI publish can't silently
+        ship raw upstream headers.
+        """
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            mock.patch.object(install_skill, "_validate_source"),
+            mock.patch.object(
+                install_skill,
+                "_resolve_targets",
+                return_value=[("codex", Path(tmpdir) / "codex")],
+            ),
+            mock.patch.object(install_skill, "_install_one", return_value="ok"),
+        ):
+            # SKILL_DIR_FOR_TARGETS is a module-level constant,
+            # not a function, so point the install path at a
+            # throwaway skill dir instead of touching the real
+            # repo skill on disk.
+            fake_skill = Path(tmpdir) / "skill"
+            fake_skill.mkdir()
+            (fake_skill / "SKILL.md").write_text("---\n", encoding="utf-8")
+            with mock.patch.object(
+                install_skill, "SKILL_DIR_FOR_TARGETS", fake_skill
+            ):
+                buf = io.StringIO()
+                with mock.patch("sys.stdout", buf):
+                    install_skill.main(
+                        ["install", "--target", "codex", "--include-data"]
+                    )
+            output = buf.getvalue()
+            self.assertIn("::warning::", output)
+            self.assertIn("raw_responses", output)
+            self.assertIn("--scrub-raw-responses", output)
+            # Sanity: the scrub flag suppresses the warning.
+            buf.truncate(0)
+            buf.seek(0)
+            with mock.patch("sys.stdout", buf):
+                install_skill.main(
+                    [
+                        "install",
+                        "--target",
+                        "codex",
+                        "--include-data",
+                        "--scrub-raw-responses",
+                    ]
+                )
+            self.assertNotIn("::warning::", buf.getvalue())
 
 
 if __name__ == "__main__":

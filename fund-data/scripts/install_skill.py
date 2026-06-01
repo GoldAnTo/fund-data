@@ -56,7 +56,14 @@ def _validate_source() -> None:
         )
 
 
-def _install_one(target: str, dest: Path, *, copy: bool, data_mode: str) -> str:
+def _install_one(
+    target: str,
+    dest: Path,
+    *,
+    copy: bool,
+    data_mode: str,
+    scrub_raw: bool = False,
+) -> str:
     if not dest.parent.exists():
         return f"  [{target}] SKIP — {dest.parent} does not exist (agent not installed?)"
 
@@ -68,7 +75,7 @@ def _install_one(target: str, dest: Path, *, copy: bool, data_mode: str) -> str:
     if dest.exists() or dest.is_symlink():
         if copy and dest.is_symlink():
             dest.unlink()
-            _copy_into(SKILL_DIR_FOR_TARGETS, dest, data_mode=data_mode)
+            _copy_into(SKILL_DIR_FOR_TARGETS, dest, data_mode=data_mode, scrub_raw=scrub_raw)
             return (
                 f"  [{target}] OK   — replaced symlink with copy "
                 f"{SKILL_DIR_FOR_TARGETS} -> {dest} (data={data_mode})"
@@ -77,7 +84,7 @@ def _install_one(target: str, dest: Path, *, copy: bool, data_mode: str) -> str:
             # Merge contents (overwrite files, recurse into directories, keep
             # the dest directory itself so any agent-side state survives).
             for child in SKILL_DIR_FOR_TARGETS.iterdir():
-                _copy_into(child, dest / child.name, data_mode=data_mode)
+                _copy_into(child, dest / child.name, data_mode=data_mode, scrub_raw=scrub_raw)
             return (
                 f"  [{target}] OK   — merged {SKILL_DIR_FOR_TARGETS} -> {dest} (data={data_mode})"
             )
@@ -89,15 +96,21 @@ def _install_one(target: str, dest: Path, *, copy: bool, data_mode: str) -> str:
     # Fresh install.
     dest.parent.mkdir(parents=True, exist_ok=True)
     if copy:
-        _copy_into(SKILL_DIR_FOR_TARGETS, dest, data_mode=data_mode)
+        _copy_into(SKILL_DIR_FOR_TARGETS, dest, data_mode=data_mode, scrub_raw=scrub_raw)
         return f"  [{target}] OK   — copied {SKILL_DIR_FOR_TARGETS} -> {dest} (data={data_mode})"
     os.symlink(SKILL_DIR_FOR_TARGETS, dest)
     return f"  [{target}] OK   — symlinked {SKILL_DIR_FOR_TARGETS} -> {dest}"
 
 
-def _copy_into(src: Path, dst: Path, *, data_mode: str = "none") -> None:
+def _copy_into(
+    src: Path, dst: Path, *, data_mode: str = "none", scrub_raw: bool = False
+) -> None:
     """Copy ``src`` to ``dst``, recursing into directories and overwriting
-    files. Preserves any extra files in ``dst`` that are not in ``src``."""
+    files. Preserves any extra files in ``dst`` that are not in ``src``.
+
+    ``scrub_raw`` is threaded through to the SQLite snapshot writer
+    so a single call covers the whole tree.
+    """
     if data_mode not in {"none", "copy"}:
         raise ValueError(f"unknown data_mode: {data_mode}")
     if _should_skip_install_path(src, data_mode=data_mode):
@@ -111,7 +124,7 @@ def _copy_into(src: Path, dst: Path, *, data_mode: str = "none") -> None:
     if src.is_dir():
         dst.mkdir(parents=True, exist_ok=True)
         for child in src.iterdir():
-            _copy_into(child, dst / child.name, data_mode=data_mode)
+            _copy_into(child, dst / child.name, data_mode=data_mode, scrub_raw=scrub_raw)
         for child in list(dst.iterdir()):
             if _should_skip_install_path(child, data_mode=data_mode):
                 if child.is_dir():
@@ -122,13 +135,23 @@ def _copy_into(src: Path, dst: Path, *, data_mode: str = "none") -> None:
         if dst.is_dir():
             shutil.rmtree(dst)
         if src.name == "fund_data.sqlite" and data_mode == "copy":
-            _copy_sqlite_database(src, dst)
-            return
-        shutil.copy2(src, dst)
+            _copy_sqlite_database(src, dst, scrub_raw=scrub_raw)
+        else:
+            shutil.copy2(src, dst)
 
 
-def _copy_sqlite_database(src: Path, dst: Path) -> None:
-    """Write a consistent SQLite snapshot, including any live WAL pages."""
+def _copy_sqlite_database(src: Path, dst: Path, *, scrub_raw: bool = False) -> None:
+    """Write a consistent SQLite snapshot, including any live WAL pages.
+
+    With ``scrub_raw=True``, the freshly-written destination has its
+    ``raw_responses`` table emptied after the backup. That table
+    stores full upstream HTTP bodies (including the caller's IP in
+    some headers), so a snapshot published to a public skill install
+    leaks the operator's network identity unless the user opts in to
+    the scrub. The flag is opt-in because dropping the table is
+    destructive on the destination and the IP-leak only matters
+    when the snapshot leaves the local machine.
+    """
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.is_symlink() or dst.is_file():
         dst.unlink()
@@ -138,6 +161,10 @@ def _copy_sqlite_database(src: Path, dst: Path) -> None:
         sqlite3.connect(dst, timeout=30.0) as target,
     ):
         source.backup(target)
+    if scrub_raw:
+        with sqlite3.connect(dst, timeout=30.0) as target:
+            target.execute("DELETE FROM raw_responses")
+            target.commit()
 
 
 def _should_skip_install_path(path: Path, *, data_mode: str) -> bool:
@@ -231,6 +258,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Shorthand for --copy --data-mode copy.",
     )
     parser.add_argument(
+        "--scrub-raw-responses",
+        action="store_true",
+        help=(
+            "When --data-mode copy is in effect, drop the raw_responses table "
+            "from the copied SQLite snapshot. The table stores full upstream "
+            "HTTP bodies (including the caller's IP in some headers), so a "
+            "snapshot published to a public skill install leaks the "
+            "operator's network identity unless the user opts in. Default "
+            "is off — pass this flag to explicitly request the scrub."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="When uninstalling, allow removing a real directory.",
@@ -243,13 +282,34 @@ def main(argv: list[str] | None = None) -> int:
         args.data_mode = "copy"
     if args.data_mode == "copy":
         args.copy = True
+    if args.action == "install" and args.data_mode == "copy":
+        # SECURITY.md #46-49 already documents the IP-in-raw_responses
+        # risk. Mirror it on the CLI so the warning is impossible to
+        # miss when a user runs --include-data without knowing.
+        if not args.scrub_raw_responses:
+            print(
+                "::warning::The SQLite snapshot includes the "
+                "raw_responses table, which stores full upstream "
+                "HTTP bodies. If this snapshot will leave your "
+                "machine (commit to a public repo, attach to a "
+                "release, etc.) pass --scrub-raw-responses to drop "
+                "that table before publishing."
+            )
 
     paths = _resolve_targets(args.target)
     print(f"fund-data {args.action} -> {args.target}")
     print(f"  source: {SKILL_DIR_FOR_TARGETS}")
     for name, dest in paths:
         if args.action == "install":
-            print(_install_one(name, dest, copy=args.copy, data_mode=args.data_mode))
+            print(
+                _install_one(
+                    name,
+                    dest,
+                    copy=args.copy,
+                    data_mode=args.data_mode,
+                    scrub_raw=args.scrub_raw_responses,
+                )
+            )
         elif args.action == "uninstall":
             line = _uninstall_one(name, dest)
             if args.force and "REFUSE" in line:
