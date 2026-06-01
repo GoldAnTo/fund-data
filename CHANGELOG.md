@@ -36,6 +36,11 @@ chronological order — see `git log` for the per-commit detail.
   contributors.
 - **README badges** — CI / Lint / Nightly Sync / License / Python /
   Version / Last Commit, all in the header.
+- **`scripts/fund_mcp.py`** — dependency-free MCP stdio server that
+  exposes the local fund data base through `initialize`,
+  `tools/list`, and `tools/call`. It wraps the existing Python API
+  as tools such as `fund_search`, `fund_nav_history`, `fund_sync`,
+  `fund_coverage_report`, and `fund_export`.
 
 ### Changed
 
@@ -45,7 +50,7 @@ chronological order — see `git log` for the per-commit detail.
 - `SKILL.md` — `version: 1.0.0` → `0.1.0` to match the
   `CHANGELOG.md` and `pyproject.toml` version.
 - `README.md` — status table rewritten with real DB numbers
-  (99 unit tests, 55.34 % snapshot coverage, 98.87 % profile
+  (103 unit tests, 55.34 % snapshot coverage, 98.87 % profile
   coverage); "Known gaps" rewritten to reflect that the v0.1.0
   list (`no CI`, `no nightly sync`, `38 stale failures`,
   `0.03 % coverage`) is done.

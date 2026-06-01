@@ -25,7 +25,7 @@ data without re-deriving the parsing logic every time.
 |---|---|
 | Core library | `fund-data/scripts/fund_data.py` (≈3.0k lines) |
 | CLI | `fund-data/scripts/fund_cli.py` |
-| Tests | **99 unit tests**, all green |
+| Tests | **103 unit tests**, all green |
 | Default DB | `fund-data/data/fund_data.sqlite` (gitignored; rebuild on first run) |
 | Providers | Eastmoney (no key) → AkShare (optional) → Tushare (`TUSHARE_TOKEN`) → Investoday (`INVESTDATA_API_KEY`) |
 | Fund universe | 26,936 funds on first seed |
@@ -68,6 +68,37 @@ python3 fund-data/scripts/fund_cli.py export funds --format csv --output /tmp/fu
 ```
 
 Override the SQLite path with `FUND_DATA_DB=/abs/path/fund_data.sqlite`.
+
+## MCP server
+
+The same data base can be exposed to MCP-capable agents over stdio:
+
+```bash
+python3 fund-data/scripts/fund_mcp.py
+```
+
+If installed as a Python package, use the console script:
+
+```bash
+fund-mcp
+```
+
+Example MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "fund-data": {
+      "command": "python3",
+      "args": ["/Users/xiongjiali/Desktop/code/fundData/fund-data/scripts/fund_mcp.py"]
+    }
+  }
+}
+```
+
+The server exposes tools such as `fund_search`, `fund_nav_history`,
+`fund_snapshot`, `fund_sync`, `fund_coverage_report`, and
+`fund_export`.
 
 ## Use as an agent skill
 
@@ -138,10 +169,11 @@ fixtures — no network required. The same command runs in CI on Python
     │   ├── fund_cli.py      # CLI wrapper
     │   ├── backfill.py      # resumable end-to-end backfill
     │   ├── doctor.py        # environment health check
+    │   ├── fund_mcp.py      # MCP stdio server
     │   ├── retry_failures.py
     │   ├── coverage_report.py
     │   ├── install_skill.py
-    │   └── tests/           # 99 unittest cases
+    │   └── tests/           # 103 unittest cases
     └── data/                # SQLite DB + watchlist files (gitignored)
 ```
 
@@ -164,9 +196,9 @@ listed in priority order, not all of them are blockers.
 3. **No `--verbose` / JSON log flag on `fund_cli.py`.** Lines are
    pretty-printed for humans. An agent-friendly `--json` flag is
    queued for 0.2.0.
-4. **No MCP server wrapper.** Codex / Claude / OpenClaw currently
-   consume the skill via `bash`. An MCP server that exposes the
-   same commands over the protocol is queued for 0.2.0.
+4. **No HTTP/SSE MCP transport.** The current MCP server is stdio-only,
+   which matches local agent clients. A Streamable HTTP wrapper can land
+   later if remote clients need it.
 
 ## Safety
 

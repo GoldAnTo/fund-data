@@ -48,6 +48,7 @@ python3 scripts/fund_cli.py sync 110022 --start-date 2024-01-01 --end-date 2024-
 python3 scripts/fund_cli.py sync 110022 --provider auto --include-all --report-year 2024 --fee-indicator 申购费率
 python3 scripts/fund_cli.py batch-sync --codes-file fund_codes.txt --provider auto --include-all --report-year 2024 --fee-indicator 申购费率
 python3 scripts/fund_cli.py export funds --format csv --output /tmp/funds.csv
+python3 scripts/fund_mcp.py
 ```
 
 Default SQLite path:
@@ -177,6 +178,27 @@ python3 scripts/doctor.py
 ```
 
 It exits non-zero on the first failure and prints a JSON report you can pipe into a CI gate.
+
+## MCP Server
+
+When an agent supports MCP, prefer the stdio server over shelling out to the CLI:
+
+```bash
+python3 scripts/fund_mcp.py
+```
+
+If the project is installed as a package, the equivalent console script is:
+
+```bash
+fund-mcp
+```
+
+The server exposes `fund_search`, `fund_list`, `fund_nav_history`,
+`fund_snapshot`, `fund_profile`, portfolio/detail fetchers,
+`fund_sync`, `fund_batch_sync`, `fund_coverage`,
+`fund_coverage_report`, and `fund_export`. It uses newline-delimited
+JSON-RPC 2.0 over stdin/stdout and must not print non-protocol output
+to stdout.
 
 ## Source Notes
 

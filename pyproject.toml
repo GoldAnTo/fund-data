@@ -50,6 +50,7 @@ fund-doctor = "scripts.doctor:main"
 fund-retry-failures = "scripts.retry_failures:main"
 fund-coverage-report = "scripts.coverage_report:main"
 fund-install-skill = "scripts.install_skill:main"
+fund-mcp = "scripts.fund_mcp:main"
 
 [tool.setuptools]
 package-dir = { "scripts" = "fund-data/scripts" }

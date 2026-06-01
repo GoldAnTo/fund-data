@@ -36,6 +36,30 @@ artifacts such as `data/fund_data.sqlite`, `data/backfill_logs/`,
 `data/backfill_state.json`, `__pycache__/`, and `.DS_Store` are
 excluded so a Codex install stays small and deterministic.
 
+## MCP server
+
+Platforms that support MCP can run the bundled stdio server directly:
+
+```bash
+python3 /path/to/fundData/fund-data/scripts/fund_mcp.py
+```
+
+Example client config:
+
+```json
+{
+  "mcpServers": {
+    "fund-data": {
+      "command": "python3",
+      "args": ["/path/to/fundData/fund-data/scripts/fund_mcp.py"]
+    }
+  }
+}
+```
+
+If the project has been installed as a Python package, use
+`"command": "fund-mcp"` with no args.
+
 ## Refresh
 
 ```bash
