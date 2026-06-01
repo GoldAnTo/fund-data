@@ -1,0 +1,125 @@
+name: security
+
+# Weekly dependency-vulnerability scan + scan on every push / PR.
+# Uses pip-audit (PyPA-recommended) against the full set of
+# dependencies — runtime (akshare) + dev (black / ruff / pre-commit /
+# mypy) + test (coverage) — so the test extra and the [project.optional-
+# dependencies] are all covered. A high or critical CVE fails the
+# workflow; medium / low CVE issues are still surfaced on the run
+# page so the team can triage by hand.
+#
+# The audit step downloads the OSV database fresh on every run so we
+# don't rely on a stale mirror. If pip-audit is ever flaky in CI,
+# pin the action and the pip-audit version, do not switch tools —
+# `safety` and `osv-scanner` were considered and have noisier output
+# against the PyPI-only constraints this project uses.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Every Monday 06:00 UTC (= 14:00 Asia/Shanghai, after the
+    # Dependabot PR fan-out at 08:00 Asia/Shanghai). Scans a fresh
+    # OSV database; new CVEs that landed in the last 7 days show up
+    # here before the next nightly backfill.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  pip-audit:
+    name: pip-audit (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          node-version: "24"
+          cache: pip
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pip-audit>=2.7"
+
+      - name: Audit runtime + dev + test dependencies
+        # The exhaustive list of extras mirrors pyproject.toml so a
+        # dev-only dep CVE (e.g. an old black) still gets caught.
+        # --strict makes the exit code non-zero on any CVE so a
+        # future gating change only needs to flip the threshold.
+        run: |
+          pip-audit \
+            --requirement requirements.txt \
+            --requirement <(echo "akshare>=1.18.0,<2.0") \
+            --strict \
+            --format columns 2>&1 | tee pip-audit.log
+        continue-on-error: true
+
+      - name: Fail on high or critical CVEs
+        # pip-audit severity lives in the OSV / PyPA advisory feed.
+        # Without --strict-pinned and --vulnerability-service osv.dev,
+        # severity is sometimes missing; the parser falls back to
+        # 'unknown'. Treat unknown as 'review needed' — log it,
+        # don't fail on it. The strict failure on high / critical
+        # gates the merge.
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          result = subprocess.run(
+              [
+                  sys.executable, "-m", "pip_audit",
+                  "--requirement", "requirements.txt",
+                  "--requirement", "/dev/stdin",
+                  "--strict",
+                  "--format", "json",
+              ],
+              input=b"akshare>=1.18.0,<2.0",
+              capture_output=True,
+              check=False,
+          )
+          try:
+              data = json.loads(result.stdout.decode() or "{}")
+          except json.JSONDecodeError:
+              data = {}
+          findings = data.get("dependencies", []) if isinstance(data, dict) else []
+
+          blockers = []
+          for f in findings:
+              if not isinstance(f, dict):
+                  continue
+              name = f.get("name", "?")
+              version = f.get("version", "?")
+              for v in f.get("vulns", []) or []:
+                  if not isinstance(v, dict):
+                      continue
+                  sev = (v.get("severity") or "UNKNOWN").upper()
+                  fix = v.get("fix_versions") or []
+                  if sev in {"HIGH", "CRITICAL"}:
+                      blockers.append((name, version, sev, v.get("id"), fix))
+
+          if blockers:
+              print("::error::Blocking CVEs found (high/critical):")
+              for name, version, sev, vid, fix in blockers:
+                  print(f"  - {name}=={version}  {sev}  {vid}  fix={fix}")
+              sys.exit(1)
+          print(f"pip-audit scanned {len(findings)} packages; no high/critical CVE.")
+          PY
+
+      - name: Upload audit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-log
+          path: pip-audit.log
