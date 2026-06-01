@@ -30,16 +30,40 @@ PROVIDER_TUSHARE = "tushare"
 
 
 def default_db_path() -> Path:
+    """Resolve the on-disk path to use when no ``db_path=`` is passed.
+
+    Precedence (intentionally narrow):
+      1. An explicitly-set ``FUND_DATA_CACHE_DIR`` — the user has
+         wired up the cloud bundle and wants the bundled query DB
+         to win. This is checked first because
+         ``FUND_DATA_DB`` is also commonly set in agent / CI
+         environments (the mavis OpenCode workspace sets it to
+         a per-pid tmp path) and the user's intent for the
+         cloud bundle should not be silently overridden.
+      2. ``FUND_DATA_DB`` env var — local override (typically
+         test or one-off dev runs).
+      3. ``fund_cloud.current_db_path()`` — the installed
+         query DB, picked up automatically when the bundle
+         has a current.json.
+      4. ``DEFAULT_DB_PATH`` — the on-disk fallback
+         (``fund-data/data/fund_data.sqlite``).
+    """
+    cache_dir = os.environ.get("FUND_DATA_CACHE_DIR")
+    if cache_dir:
+        try:
+            from . import fund_cloud
+        except ImportError:  # pragma: no cover - direct script execution
+            import fund_cloud  # type: ignore
+        cloud_db = fund_cloud.current_db_path()
+        if cloud_db:
+            return cloud_db
     configured = os.environ.get("FUND_DATA_DB")
     if configured:
         return Path(configured)
     try:
         from . import fund_cloud
     except ImportError:  # pragma: no cover - direct script execution
-        try:
-            import fund_cloud  # type: ignore
-        except ImportError:
-            return DEFAULT_DB_PATH
+        import fund_cloud  # type: ignore
     cloud_db = fund_cloud.current_db_path()
     return cloud_db or DEFAULT_DB_PATH
 
