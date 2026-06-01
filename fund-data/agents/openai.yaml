@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fund Data"
+  short_description: "Search, fetch, and persist Chinese public fund data."
+  default_prompt: "Search for a fund, fetch core fund data, and persist it locally."

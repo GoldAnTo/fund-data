@@ -1,0 +1,15 @@
+# Standard library only for the core data flow.
+# AkShare is optional and required only for the AkShare-backed fallback
+# capabilities (profile, holdings, bonds, industries, fees, dividends,
+# splits, fund_managers). Install it into a dedicated virtual environment
+# because it pulls in numpy/pandas and is not compatible with the runtime
+# that uses urllib + sqlite3 only.
+#
+# Recommended setup:
+#   python3 -m venv .venv-akshare
+#   .venv-akshare/bin/python -m pip install akshare==1.18.64
+#
+# The CLI automatically picks up the AkShare provider when the venv is
+# active; in auto mode, missing providers are skipped with a warning
+# rather than failing the run.
+akshare==1.18.64
