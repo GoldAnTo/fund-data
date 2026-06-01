@@ -17,6 +17,7 @@ data without re-deriving the parsing logic every time.
 > Codex / Claude / OpenClaw skill home: [`fund-data/SKILL.md`](fund-data/SKILL.md).
 > Design spec: [`docs/superpowers/specs/2026-06-01-fund-data-skill-design.md`](docs/superpowers/specs/2026-06-01-fund-data-skill-design.md).
 > Implementation plan: [`docs/superpowers/plans/2026-06-01-fund-data-skill.md`](docs/superpowers/plans/2026-06-01-fund-data-skill.md).
+> Architecture reference: [`fund-data/ARCHITECTURE.md`](fund-data/ARCHITECTURE.md).
 > Provider onboarding: [`fund-data/PROVIDERS.md`](fund-data/PROVIDERS.md).
 
 ## Status (v0.1.0)
@@ -216,6 +217,7 @@ fixtures — no network required. The same command runs in CI on Python
 └── fund-data/               # the Codex / Claude / OpenClaw skill
     ├── SKILL.md             # agent entrypoint
     ├── SKILLS.md            # per-platform install layout
+    ├── ARCHITECTURE.md     # contributor-facing layer / lifecycle reference
     ├── PROVIDERS.md         # provider onboarding
     ├── AGENTS.md            # performance / backfill notes
     ├── agents/openai.yaml
