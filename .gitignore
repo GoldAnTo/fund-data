@@ -70,3 +70,8 @@ htmlcov/
 # Per-user sync state and doctor dumps.
 **/data/sync_state/
 **/data/doctor*.txt
+
+# Backfill runtime artifacts (large logs, incremental state).
+**/data/backfill_state.json
+**/data/backfill_summary.json
+**/data/backfill_logs/
