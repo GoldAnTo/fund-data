@@ -53,6 +53,20 @@ python3 fund-data/scripts/fund_cli.py export funds --format csv --output /tmp/fu
 
 Override the SQLite path with `FUND_DATA_DB=/abs/path/fund_data.sqlite`.
 
+## Use as an agent skill
+
+The skill ships to **Codex**, **Claude Code**, and **OpenClaw** from a
+single source tree. Run the installer once:
+
+```bash
+python3 fund-data/scripts/install_skill.py install
+```
+
+The installer links or copies the skill folder into the standard
+discovery directory for each platform. See
+[`fund-data/SKILLS.md`](fund-data/SKILLS.md) for the layout,
+refresh flow, and platform-specific quirks.
+
 ## Tests
 
 ```bash
