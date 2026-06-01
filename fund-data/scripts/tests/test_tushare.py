@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 SCRIPT_DIR = __file__.rsplit("/", 2)[0]
 import sys
+
 sys.path.insert(0, SCRIPT_DIR.rsplit("/", 1)[0])
 
 from scripts import fund_data  # noqa: E402
@@ -28,29 +29,55 @@ class FakePro:
     def fund_basic(self, **kwargs):
         self.calls.append(("fund_basic", kwargs))
         return [
-            {"ts_code": "110022.OF", "name": "易方达消费", "fund_type": "股票型",
-             "management": "易方达基金", "custodian": "农业银行"},
+            {
+                "ts_code": "110022.OF",
+                "name": "易方达消费",
+                "fund_type": "股票型",
+                "management": "易方达基金",
+                "custodian": "农业银行",
+            },
         ]
 
     def fund_nav(self, **kwargs):
         self.calls.append(("fund_nav", kwargs))
         return [
-            {"nav_date": "2024-01-31", "unit_nav": "3.1330", "accum_nav": "3.1330", "adj_nav": "-0.0132"},
-            {"nav_date": "2024-01-30", "unit_nav": "3.1750", "accum_nav": "3.1750", "adj_nav": "-0.0234"},
+            {
+                "nav_date": "2024-01-31",
+                "unit_nav": "3.1330",
+                "accum_nav": "3.1330",
+                "adj_nav": "-0.0132",
+            },
+            {
+                "nav_date": "2024-01-30",
+                "unit_nav": "3.1750",
+                "accum_nav": "3.1750",
+                "adj_nav": "-0.0234",
+            },
         ]
 
     def fund_portfolio(self, **kwargs):
         self.calls.append(("fund_portfolio", kwargs))
         return [
-            {"end_date": "2024-12-31", "stock_code": "600519", "stock_name": "贵州茅台",
-             "ratio": 9.83, "amount": 12345.0, "mkv": 23456789.0},
+            {
+                "end_date": "2024-12-31",
+                "stock_code": "600519",
+                "stock_name": "贵州茅台",
+                "ratio": 9.83,
+                "amount": 12345.0,
+                "mkv": 23456789.0,
+            },
         ]
 
     def fund_manager(self, **kwargs):
         self.calls.append(("fund_manager", kwargs))
         return [
-            {"name": "萧楠", "gender": "M", "ts_code": "110022.OF", "fund_name": "易方达消费",
-             "return_rate": 2.75},
+            {
+                "name": "萧楠",
+                "gender": "M",
+                "ts_code": "110022.OF",
+                "fund_name": "易方达消费",
+                "return_rate": 2.75,
+            },
         ]
 
 
@@ -62,6 +89,7 @@ class TushareProviderInitTests(unittest.TestCase):
 
     def test_raises_when_no_token_and_no_pro(self):
         import os
+
         old = os.environ.pop("TUSHARE_TOKEN", None)
         try:
             with self.assertRaises(fund_data.ProviderError):
@@ -119,8 +147,14 @@ class TushareProviderMethodTests(unittest.TestCase):
     def test_stock_holdings_passes_through_existing_decimal_ratio(self):
         # If ratio is already <=1.0, do not divide again.
         self.pro.fund_portfolio = lambda **kw: [
-            {"end_date": "2024-12-31", "stock_code": "000001", "stock_name": "X",
-             "ratio": 0.05, "amount": 100.0, "mkv": 1000.0}
+            {
+                "end_date": "2024-12-31",
+                "stock_code": "000001",
+                "stock_name": "X",
+                "ratio": 0.05,
+                "amount": 100.0,
+                "mkv": 1000.0,
+            }
         ]
         rows = self.provider.stock_holdings("110022", report_year="2024")
         self.assertEqual(rows[0]["net_value_ratio"], 0.05)
@@ -137,16 +171,13 @@ class BuildProvidersTushareTests(unittest.TestCase):
     def test_tushare_token_routes_into_chain(self):
         import os
         from unittest.mock import patch
+
         old = os.environ.get("TUSHARE_TOKEN")
         os.environ["TUSHARE_TOKEN"] = "fake"
         try:
             # Patch TushareProvider.__init__ so it does not need a real pro.
-            with patch.object(
-                fund_data.TushareProvider, "__init__", lambda self: None
-            ):
-                providers, warnings = fund_data.build_providers_full(
-                    "auto", capability="profile"
-                )
+            with patch.object(fund_data.TushareProvider, "__init__", lambda self: None):
+                providers, warnings = fund_data.build_providers_full("auto", capability="profile")
             names = [type(p).__name__ for p in providers]
             # Tushare should be tried first, then AkShare, then Eastmoney.
             # AkShare may be skipped if not installed in the running Python;

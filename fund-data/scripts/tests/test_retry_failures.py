@@ -1,4 +1,3 @@
-import json
 import sqlite3
 import tempfile
 import unittest
@@ -8,6 +7,7 @@ from unittest.mock import patch
 SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys_path = SCRIPT_DIR
 import sys
+
 sys.path.insert(0, str(sys_path))
 
 from scripts import retry_failures  # noqa: E402
@@ -15,8 +15,7 @@ from scripts import retry_failures  # noqa: E402
 
 def _make_db(path: Path, failures: list[tuple[str, str]]) -> None:
     with sqlite3.connect(path) as conn:
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE sync_failures (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 batch_id TEXT,
@@ -26,8 +25,7 @@ def _make_db(path: Path, failures: list[tuple[str, str]]) -> None:
                 message TEXT,
                 failed_at TEXT
             );
-            """
-        )
+            """)
         for code, message in failures:
             conn.execute(
                 "INSERT INTO sync_failures(operation, fund_code, provider, message, failed_at) "
@@ -110,9 +108,14 @@ class RetryFlowTests(unittest.TestCase):
         _make_db(self.db, [(c, "x") for c in codes])
         with patch.object(retry_failures.fund_data, "batch_sync_funds") as mock_batch:
             mock_batch.return_value = {
-                "batch_id": "x", "total": 5, "ok": 5, "failed": 0,
-                "concurrency": 1, "min_interval_seconds": 1.0,
-                "results": [], "coverage": [],
+                "batch_id": "x",
+                "total": 5,
+                "ok": 5,
+                "failed": 0,
+                "concurrency": 1,
+                "min_interval_seconds": 1.0,
+                "results": [],
+                "coverage": [],
             }
             retry_failures.retry(db_path=self.db, limit=5)
         self.assertEqual(len(mock_batch.call_args.args[0]), 5)

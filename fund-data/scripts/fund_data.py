@@ -9,15 +9,15 @@ import re
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, ClassVar, Iterator
+from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-
 
 logger = logging.getLogger("fund_data")
 
@@ -30,7 +30,7 @@ PROVIDER_TUSHARE = "tushare"
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
 def normalize_fund_code(value: str) -> str:
@@ -389,7 +389,7 @@ def run_provider_chain(
 class FundDataClient:
     min_interval_seconds: float = 1.0
     timeout_seconds: int = 20
-    rate_limiter: "_RateLimiter | None" = None
+    rate_limiter: _RateLimiter | None = None
 
     SEARCH_URL = "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx"
     FUND_CODE_URL = "https://fund.eastmoney.com/js/fundcode_search.js"
@@ -458,7 +458,7 @@ class _RateLimiter:
         self._lock = threading.Lock()
         self._last_call = 0.0
 
-    def __enter__(self) -> "_RateLimiter":
+    def __enter__(self) -> _RateLimiter:
         self._lock.acquire()
         elapsed = time.monotonic() - self._last_call
         if elapsed < self.min_interval_seconds:
@@ -501,7 +501,9 @@ class EastmoneyProvider:
         return parse_snapshot(self.client.snapshot(code))
 
     def stock_holdings(self, code: str, *, report_year: str | None = None) -> list[dict[str, Any]]:
-        raise ProviderError("Eastmoney direct stock holdings are not implemented; use akshare or investoday")
+        raise ProviderError(
+            "Eastmoney direct stock holdings are not implemented; use akshare or investoday"
+        )
 
 
 class AkshareProvider:
@@ -516,7 +518,9 @@ class AkshareProvider:
         try:
             import akshare as ak  # type: ignore
         except Exception as exc:
-            raise ProviderError("akshare is not installed; run `python3 -m pip install akshare`") from exc
+            raise ProviderError(
+                "akshare is not installed; run `python3 -m pip install akshare`"
+            ) from exc
         self.ak = ak
 
     def search_funds(self, keyword: str) -> list[dict[str, Any]]:
@@ -617,7 +621,9 @@ class AkshareProvider:
         return rows
 
     def profile(self, code: str) -> dict[str, Any]:
-        profile = _profile_dict(_records(self.ak.fund_overview_em(symbol=normalize_fund_code(code))))
+        profile = _profile_dict(
+            _records(self.ak.fund_overview_em(symbol=normalize_fund_code(code)))
+        )
         established = profile.get("成立日期/规模", "")
         established_date = _normalize_date_text(established.split("/")[0]) if established else ""
         asset_size_text = profile.get("净资产规模") or profile.get("资产规模", "")
@@ -684,7 +690,9 @@ class AkshareProvider:
             )
         return rows
 
-    def industry_allocations(self, code: str, *, report_year: str | None = None) -> list[dict[str, Any]]:
+    def industry_allocations(
+        self, code: str, *, report_year: str | None = None
+    ) -> list[dict[str, Any]]:
         year = report_year or str(datetime.now().year - 1)
         rows = []
         for item in _records(
@@ -736,9 +744,7 @@ class AkshareProvider:
         if not rows:
             bond_type_keywords = {"债券", "货币", "纯债", "短债", "中短债", "企债", "信用债"}
             try:
-                profile_rows = _records(
-                    self.ak.fund_overview_em(symbol=normalize_fund_code(code))
-                )
+                profile_rows = _records(self.ak.fund_overview_em(symbol=normalize_fund_code(code)))
                 profile = _profile_dict(profile_rows)
                 fund_type = str(profile.get("基金类型", "")).lower()
                 if any(keyword in fund_type for keyword in bond_type_keywords):
@@ -758,15 +764,21 @@ class AkshareProvider:
     def fee_structures(
         self, code: str, *, indicators: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        indicator_list = [_fee_indicator_alias(item) for item in (indicators or [
-            "交易状态",
-            "申购与赎回金额",
-            "交易确认日",
-            "运作费用",
-            "认购费率",
-            "申购费率",
-            "赎回费率",
-        ])]
+        indicator_list = [
+            _fee_indicator_alias(item)
+            for item in (
+                indicators
+                or [
+                    "交易状态",
+                    "申购与赎回金额",
+                    "交易确认日",
+                    "运作费用",
+                    "认购费率",
+                    "申购费率",
+                    "赎回费率",
+                ]
+            )
+        ]
         rows = []
         page_rows = self._fee_structures_from_eastmoney_page(code, indicator_list)
         for indicator in indicator_list:
@@ -779,8 +791,7 @@ class AkshareProvider:
             rows.extend(self._normalize_fee_records(indicator, raw_rows, "akshare.fund_fee_em"))
         if page_rows:
             existing_keys = {
-                (row["fee_type"], row["condition_name"], row.get("fee_text", ""))
-                for row in rows
+                (row["fee_type"], row["condition_name"], row.get("fee_text", "")) for row in rows
             }
             for row in page_rows:
                 key = (row["fee_type"], row["condition_name"], row.get("fee_text", ""))
@@ -797,9 +808,7 @@ class AkshareProvider:
         normalized = normalize_fund_code(code)
         rows: list[dict[str, Any]] = []
         try:
-            etf_info = _records(
-                self.ak.fund_etf_fund_info_em(symbol=normalized)
-            )
+            etf_info = _records(self.ak.fund_etf_fund_info_em(symbol=normalized))
             if etf_info:
                 first_row = etf_info[0] if isinstance(etf_info, list) else etf_info
                 management_fee = _first_value(
@@ -961,10 +970,11 @@ class AkshareProvider:
         self, code: str, indicators: list[str]
     ) -> list[dict[str, Any]]:
         try:
+            from io import StringIO
+
             import pandas as pd  # type: ignore
             import requests  # type: ignore
             from bs4 import BeautifulSoup  # type: ignore
-            from io import StringIO
         except Exception:
             return []
 
@@ -1118,7 +1128,9 @@ class AkshareProvider:
     def splits(self, code: str) -> list[dict[str, Any]]:
         code = normalize_fund_code(code)
         try:
-            split_records = _records(self.ak.fund_open_fund_info_em(symbol=code, indicator="拆分详情"))
+            split_records = _records(
+                self.ak.fund_open_fund_info_em(symbol=code, indicator="拆分详情")
+            )
         except Exception:
             split_records = [{}]
         rows = self._split_rows_from_records(
@@ -1154,9 +1166,7 @@ class AkshareProvider:
             rows.append(
                 {
                     "split_date": _normalize_date_text(split_date),
-                    "split_type": _clean_text(
-                        _first_value(item, "拆分类型", "类型", "split_type")
-                    ),
+                    "split_type": _clean_text(_first_value(item, "拆分类型", "类型", "split_type")),
                     "split_ratio": _ratio_value(
                         _first_value(item, "拆分折算比例", "拆分比例", "拆分折算", "split_ratio")
                     ),
@@ -1178,8 +1188,12 @@ class AkshareProvider:
                     "company": str(_first_value(item, "所属公司", "company") or ""),
                     "current_fund_codes": current_codes,
                     "current_funds": str(_first_value(item, "现任基金", "current_funds") or ""),
-                    "tenure_days": int(_to_float(_first_value(item, "累计从业时间", "tenure_days")) or 0),
-                    "current_aum": _to_float(_first_value(item, "现任基金资产总规模", "current_aum")),
+                    "tenure_days": int(
+                        _to_float(_first_value(item, "累计从业时间", "tenure_days")) or 0
+                    ),
+                    "current_aum": _to_float(
+                        _first_value(item, "现任基金资产总规模", "current_aum")
+                    ),
                     "best_return": _to_float(
                         _first_value(item, "现任基金最佳回报", "best_return"), percent=True
                     ),
@@ -1196,7 +1210,11 @@ class InvestodayProvider:
         self.api_key = api_key or os.environ.get("INVESTDATA_API_KEY")
         if not self.api_key:
             raise ProviderError("INVESTDATA_API_KEY is not set")
-        self.base_url = (base_url or os.environ.get("FINANCIAL_DATA_BASE_URL") or "https://data-api.investoday.net/data").rstrip("/")
+        self.base_url = (
+            base_url
+            or os.environ.get("FINANCIAL_DATA_BASE_URL")
+            or "https://data-api.investoday.net/data"
+        ).rstrip("/")
 
     def _get_json(self, path: str, params: dict[str, Any]) -> Any:
         url = f"{self.base_url}{path}"
@@ -1208,22 +1226,33 @@ class InvestodayProvider:
         return json.loads(data)
 
     def fund_list(self) -> list[dict[str, Any]]:
-        records = _extract_payload_records(self._get_json("/fund/all", {"pageNum": 1, "pageSize": 10000}))
+        records = _extract_payload_records(
+            self._get_json("/fund/all", {"pageNum": 1, "pageSize": 10000})
+        )
         rows = []
         for item in records:
             code = _first_value(item, "fundCode", "fund_code", "code", "FCODE", "基金代码")
-            name = _first_value(item, "fundName", "fund_name", "name", "SHORTNAME", "基金名称", "基金简称")
+            name = _first_value(
+                item, "fundName", "fund_name", "name", "SHORTNAME", "基金名称", "基金简称"
+            )
             if not code or not name:
                 continue
             rows.append(
                 {
                     "fund_code": normalize_fund_code(code),
                     "fund_name": str(name),
-                    "fund_type": str(_first_value(item, "fundType", "fund_type", "type", "基金类型") or ""),
-                    "company": str(_first_value(item, "company", "fundCompany", "managerCompany", "基金公司") or ""),
+                    "fund_type": str(
+                        _first_value(item, "fundType", "fund_type", "type", "基金类型") or ""
+                    ),
+                    "company": str(
+                        _first_value(item, "company", "fundCompany", "managerCompany", "基金公司")
+                        or ""
+                    ),
                     "manager": str(_first_value(item, "manager", "fundManager", "基金经理") or ""),
                     "nav": _to_float(_first_value(item, "nav", "unitNav", "DWJZ", "单位净值")),
-                    "nav_date": str(_first_value(item, "navDate", "date", "FSRQ", "净值日期") or ""),
+                    "nav_date": str(
+                        _first_value(item, "navDate", "date", "FSRQ", "净值日期") or ""
+                    ),
                     "other_names": str(_first_value(item, "otherNames", "alias", "aliases") or ""),
                     "source": "investoday.fund_all",
                 }
@@ -1274,9 +1303,14 @@ class InvestodayProvider:
                     ),
                     "daily_growth_rate": _to_float(
                         _first_value(item, "dailyGrowthRate", "dailyReturn", "日增长率"),
-                        percent="%" in str(_first_value(item, "dailyGrowthRate", "dailyReturn", "日增长率") or ""),
+                        percent="%"
+                        in str(
+                            _first_value(item, "dailyGrowthRate", "dailyReturn", "日增长率") or ""
+                        ),
                     ),
-                    "subscribe_status": str(_first_value(item, "subscribeStatus", "申购状态") or ""),
+                    "subscribe_status": str(
+                        _first_value(item, "subscribeStatus", "申购状态") or ""
+                    ),
                     "redeem_status": str(_first_value(item, "redeemStatus", "赎回状态") or ""),
                     "dividend": str(_first_value(item, "dividend", "分红送配") or ""),
                     "source": "investoday.fund_nav_history",
@@ -1304,16 +1338,23 @@ class InvestodayProvider:
             rows.append(
                 {
                     "report_period": str(
-                        _first_value(item, "reportPeriod", "quarter", "reportDate", "季度") or report_year or ""
+                        _first_value(item, "reportPeriod", "quarter", "reportDate", "季度")
+                        or report_year
+                        or ""
                     ),
                     "stock_code": str(stock_code).zfill(6),
                     "stock_name": str(stock_name),
                     "net_value_ratio": _to_float(
                         _first_value(item, "netValueRatio", "holdingRatio", "占净值比例"),
-                        percent="%" in str(_first_value(item, "netValueRatio", "holdingRatio", "占净值比例") or ""),
+                        percent="%"
+                        in str(
+                            _first_value(item, "netValueRatio", "holdingRatio", "占净值比例") or ""
+                        ),
                     ),
                     "shares": _to_float(_first_value(item, "shares", "holdingShares", "持股数")),
-                    "market_value": _to_float(_first_value(item, "marketValue", "holdingMarketValue", "持仓市值")),
+                    "market_value": _to_float(
+                        _first_value(item, "marketValue", "holdingMarketValue", "持仓市值")
+                    ),
                     "source": "investoday.fund_portfolio_stock_holdings",
                 }
             )
@@ -1348,6 +1389,7 @@ class TushareProvider:
             )
         try:
             import tushare as ts
+
             ts.set_token(self.token)
             self.pro = ts.pro_api()
         except Exception as exc:
@@ -1436,10 +1478,7 @@ class TushareProvider:
         df = self.pro.fund_basic(ts_code=self._to_ts_code(code))
         if df is None or (hasattr(df, "empty") and df.empty):
             raise ProviderError(f"tushare returned no profile for {code}")
-        if hasattr(df, "iloc"):
-            item = df.iloc[0].to_dict()
-        else:
-            item = df[0] if df else {}
+        item = df.iloc[0].to_dict() if hasattr(df, "iloc") else (df[0] if df else {})
         return {
             "fund_code": normalize_fund_code(code),
             "fund_name": str(item.get("name", "")),
@@ -1526,11 +1565,8 @@ def _tushare_period(report_year: str | None) -> str:
     return f"{year}1231"
 
 
-def build_providers(
-    provider: str, *, capability: str | None = None
-) -> list[Any]:
-    """Build the provider chain for a capability.
-    """
+def build_providers(provider: str, *, capability: str | None = None) -> list[Any]:
+    """Build the provider chain for a capability."""
     providers, init_warnings = build_providers_full(provider, capability=capability)
     for message in init_warnings:
         logger.warning(message)
@@ -1615,8 +1651,7 @@ class FundDataStore:
 
     def ensure_schema(self) -> None:
         with self.connect() as conn:
-            conn.executescript(
-                """
+            conn.executescript("""
                 create table if not exists funds (
                     fund_code text primary key,
                     fund_name text not null,
@@ -1772,8 +1807,7 @@ class FundDataStore:
                     fetched_at text not null,
                     primary key (manager_name, company, current_fund_codes)
                 );
-                """
-            )
+                """)
             self._ensure_column(conn, "industry_allocations", "market_value", "real")
             self._ensure_column(conn, "fee_structures", "fee_text", "text")
             self._ensure_column(conn, "fee_structures", "discount_fee", "real")
@@ -2315,7 +2349,9 @@ def search_funds(
         rows = parse_search_results(raw)
         source = "eastmoney.search"
     else:
-        result = run_provider_chain(build_providers(provider, capability="search"), "search_funds", keyword)
+        result = run_provider_chain(
+            build_providers(provider, capability="search"), "search_funds", keyword
+        )
         rows = result.rows
         source = f"{result.provider}.search"
         raw = _json_dumps({"provider": result.provider, "rows": rows, "failures": result.failures})
@@ -2384,7 +2420,9 @@ def fetch_nav_history(
         source = f"{result.provider}.nav_history"
         raw = _json_dumps({"provider": result.provider, "rows": rows, "failures": result.failures})
     if persist:
-        request_key = f"{normalize_fund_code(code)}:{start_date or ''}:{end_date or ''}:{page}:{per}"
+        request_key = (
+            f"{normalize_fund_code(code)}:{start_date or ''}:{end_date or ''}:{page}:{per}"
+        )
         store = FundDataStore(db_path)
         store.upsert_nav_history(code, rows)
         store.record_raw_response(source, request_key, raw)
@@ -2409,10 +2447,14 @@ def fetch_snapshot(
         snapshot = parse_snapshot(raw)
         source = "eastmoney.snapshot"
     else:
-        result = run_provider_chain(build_providers(provider, capability="snapshot"), "snapshot", code)
+        result = run_provider_chain(
+            build_providers(provider, capability="snapshot"), "snapshot", code
+        )
         snapshot = result.rows
         source = f"{result.provider}.snapshot"
-        raw = _json_dumps({"provider": result.provider, "snapshot": snapshot, "failures": result.failures})
+        raw = _json_dumps(
+            {"provider": result.provider, "snapshot": snapshot, "failures": result.failures}
+        )
     if persist:
         store = FundDataStore(db_path)
         store.upsert_snapshot(snapshot)
@@ -2461,7 +2503,9 @@ def fetch_profile(
         store.record_raw_response(
             f"{result.provider}.profile",
             normalize_fund_code(code),
-            _json_dumps({"provider": result.provider, "profile": profile, "failures": result.failures}),
+            _json_dumps(
+                {"provider": result.provider, "profile": profile, "failures": result.failures}
+            ),
         )
     return profile
 
@@ -2595,7 +2639,9 @@ def fetch_fund_managers(
     persist: bool = True,
     provider: str = PROVIDER_AUTO,
 ) -> list[dict[str, Any]]:
-    result = run_provider_chain(build_providers(provider, capability="fund_managers"), "fund_managers", code)
+    result = run_provider_chain(
+        build_providers(provider, capability="fund_managers"), "fund_managers", code
+    )
     rows = result.rows
     if persist:
         store = FundDataStore(db_path)
@@ -2710,7 +2756,9 @@ def _fund_row_from_sync(
     profile = profile or {}
     return {
         "fund_code": normalize_fund_code(code),
-        "fund_name": profile.get("fund_name") or snapshot.get("fund_name") or normalize_fund_code(code),
+        "fund_name": profile.get("fund_name")
+        or snapshot.get("fund_name")
+        or normalize_fund_code(code),
         "fund_type": profile.get("fund_type", ""),
         "company": profile.get("fund_company", ""),
         "manager": profile.get("manager", ""),
@@ -2760,7 +2808,9 @@ def sync_fund(
         dataset_errors.append({"dataset": dataset, "message": str(exc)})
 
     try:
-        snapshot = fetch_snapshot(code, db_path=db_path, client=client, persist=True, provider=provider)
+        snapshot = fetch_snapshot(
+            code, db_path=db_path, client=client, persist=True, provider=provider
+        )
         snapshot_count = 1
         rows_changed += snapshot_count
 
@@ -2845,7 +2895,9 @@ def sync_fund(
         split_count = 0
         if include_distributions:
             try:
-                dividend_rows = fetch_dividends(code, db_path=db_path, persist=True, provider=provider)
+                dividend_rows = fetch_dividends(
+                    code, db_path=db_path, persist=True, provider=provider
+                )
                 dividend_count = len(dividend_rows)
                 rows_changed += dividend_count
             except Exception as exc:
@@ -2860,7 +2912,9 @@ def sync_fund(
         manager_count = 0
         if include_managers:
             try:
-                manager_rows = fetch_fund_managers(code, db_path=db_path, persist=True, provider=provider)
+                manager_rows = fetch_fund_managers(
+                    code, db_path=db_path, persist=True, provider=provider
+                )
                 manager_count = len(manager_rows)
                 rows_changed += manager_count
             except Exception as exc:

@@ -20,11 +20,15 @@ def _print_json(value) -> None:
 
 
 def _add_common_db_arg(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--db", help="SQLite database path. Defaults to fund-data/data/fund_data.sqlite")
+    parser.add_argument(
+        "--db", help="SQLite database path. Defaults to fund-data/data/fund_data.sqlite"
+    )
 
 
 def _add_offline_arg(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--offline-raw", help="Read a saved raw response instead of calling the network")
+    parser.add_argument(
+        "--offline-raw", help="Read a saved raw response instead of calling the network"
+    )
 
 
 def _add_provider_arg(parser: argparse.ArgumentParser) -> None:
@@ -180,7 +184,9 @@ def build_parser() -> argparse.ArgumentParser:
         "coverage-report",
         help="Show completeness score for funds with detailed missing-dataset breakdown",
     )
-    coverage_report.add_argument("--codes-file", action="append", help="Text file containing fund codes")
+    coverage_report.add_argument(
+        "--codes-file", action="append", help="Text file containing fund codes"
+    )
     coverage_report.add_argument("--code", action="append", help="Fund code; can be repeated")
     coverage_report.add_argument("--fund-type", help="Filter by fund type (substring match)")
     coverage_report.add_argument(
@@ -202,7 +208,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format (default: json)",
     )
     coverage_report.add_argument(
-        "--output", help="Write to this file instead of stdout (extension drives format if --format is omitted)"
+        "--output",
+        help="Write to this file instead of stdout (extension drives format if --format is omitted)",
     )
     _add_common_db_arg(coverage_report)
 
@@ -384,7 +391,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "batch-sync":
             codes = []
             for codes_file in args.codes_file or []:
-                codes.extend(fund_data.parse_fund_codes(Path(codes_file).read_text(encoding="utf-8")))
+                codes.extend(
+                    fund_data.parse_fund_codes(Path(codes_file).read_text(encoding="utf-8"))
+                )
             codes.extend(fund_data.normalize_fund_codes(args.code or []))
             codes = fund_data.normalize_fund_codes(codes)
             result = fund_data.batch_sync_funds(
@@ -446,9 +455,9 @@ def main(argv: list[str] | None = None) -> int:
             summary = {
                 "total_funds": len(rows),
                 "fully_covered": sum(1 for r in rows if r["completeness"] == 1.0),
-                "average_completeness": round(
-                    sum(r["completeness"] for r in rows) / len(rows), 4
-                ) if rows else 0.0,
+                "average_completeness": (
+                    round(sum(r["completeness"] for r in rows) / len(rows), 4) if rows else 0.0
+                ),
                 "rows": rows,
             }
             output_path = args.output

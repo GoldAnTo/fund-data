@@ -23,6 +23,7 @@ The defaults match the values recommended in ``README.md`` under
 "known gaps": NAV since ``2021-01-01`` (5 years), include all optional
 datasets, fund_type filtering on.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -31,7 +32,7 @@ import logging
 import sqlite3
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -59,7 +60,7 @@ DEFAULT_STATE_PATH = SCRIPT_DIR.parent / "data" / "backfill_state.json"
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _load_funds(
@@ -99,16 +100,21 @@ def _resolve_include_flags(
     the calls just cost rate-limit budget. Skipping them is a pure win.
     """
     if always_include_all:
-        return {flag: True for flag in (
-            "include_holdings",
-            "include_profile",
-            "include_bonds",
-            "include_industries",
-            "include_fees",
-            "include_distributions",
-            "include_managers",
-        )}
-    if skip_optional_for_currency and any(token in fund_type for token in SKIP_OPTIONAL_DATASETS_FOR_TYPES):
+        return dict.fromkeys(
+            (
+                "include_holdings",
+                "include_profile",
+                "include_bonds",
+                "include_industries",
+                "include_fees",
+                "include_distributions",
+                "include_managers",
+            ),
+            True,
+        )
+    if skip_optional_for_currency and any(
+        token in fund_type for token in SKIP_OPTIONAL_DATASETS_FOR_TYPES
+    ):
         return {
             "include_holdings": False,
             "include_profile": True,
@@ -196,20 +202,40 @@ def backfill(
     failed = set(state.get("failed_codes", []))
     pending = [(c, t) for c, t in all_codes if c not in completed and c not in failed]
     if not pending:
-        logger.info("nothing to do: %d total, %d completed, %d failed", len(all_codes), len(completed), len(failed))
-        return {"total": len(all_codes), "pending": 0, "ok": len(completed), "failed": len(failed), "batches": []}
+        logger.info(
+            "nothing to do: %d total, %d completed, %d failed",
+            len(all_codes),
+            len(completed),
+            len(failed),
+        )
+        return {
+            "total": len(all_codes),
+            "pending": 0,
+            "ok": len(completed),
+            "failed": len(failed),
+            "batches": [],
+        }
 
     logger.info(
         "backfill plan: %d total, %d already done, %d failed previously, %d pending",
-        len(all_codes), len(completed), len(failed), len(pending),
+        len(all_codes),
+        len(completed),
+        len(failed),
+        len(pending),
     )
 
     # Group by fund_type to batch funds that share the same include flag set.
     groups: dict[tuple, list[str]] = {}
     for code, ftype in pending:
-        flags = tuple(sorted(_resolve_include_flags(
-            ftype, always_include_all=False, skip_optional_for_currency=skip_optional_for_currency
-        ).items()))
+        flags = tuple(
+            sorted(
+                _resolve_include_flags(
+                    ftype,
+                    always_include_all=False,
+                    skip_optional_for_currency=skip_optional_for_currency,
+                ).items()
+            )
+        )
         groups.setdefault(flags, []).append(code)
 
     batch_reports: list[dict[str, Any]] = []
@@ -217,11 +243,12 @@ def backfill(
     for flags_tuple, codes in groups.items():
         flags = dict(flags_tuple)
         for i in range(0, len(codes), batch_size):
-            batch = codes[i:i + batch_size]
+            batch = codes[i : i + batch_size]
             batch_id = f"backfill-{_utc_now()}-{i // batch_size:04d}"
             logger.info(
                 "running batch %s: %d funds, flags=%s",
-                batch_id, len(batch),
+                batch_id,
+                len(batch),
                 {k: v for k, v in flags.items() if v},
             )
             batch_started = time.monotonic()
@@ -252,7 +279,10 @@ def backfill(
             batch_reports.append(batch_report)
             logger.info(
                 "batch %s done in %.1fs: ok=%d failed=%d",
-                batch_id, elapsed, result["ok"], result["failed"],
+                batch_id,
+                elapsed,
+                result["ok"],
+                result["failed"],
             )
             for outcome in result["results"]:
                 if outcome.get("status") == "ok":
@@ -278,7 +308,10 @@ def backfill(
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(
         "backfill finished: %d ok, %d failed, %.1fs total. summary=%s",
-        summary["completed"], summary["failed"], total_elapsed, summary_path,
+        summary["completed"],
+        summary["failed"],
+        total_elapsed,
+        summary_path,
     )
     return summary
 
@@ -287,8 +320,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=str(DEFAULT_DB_PATH), help="SQLite path")
     parser.add_argument("--state", default=str(DEFAULT_STATE_PATH), help="State JSON path")
-    parser.add_argument("--include-type", action="append", help="Substring match for fund_type to include (repeatable)")
-    parser.add_argument("--exclude-type", action="append", help="Substring match for fund_type to skip (repeatable)")
+    parser.add_argument(
+        "--include-type",
+        action="append",
+        help="Substring match for fund_type to include (repeatable)",
+    )
+    parser.add_argument(
+        "--exclude-type", action="append", help="Substring match for fund_type to skip (repeatable)"
+    )
     parser.add_argument(
         "--no-skip-currency",
         action="store_true",
@@ -307,16 +346,24 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_REPORT_YEAR,
         help=f"Year for stock/bond/industry holdings (default: {DEFAULT_REPORT_YEAR})",
     )
-    parser.add_argument("--fee-indicator", action="append", help="Fee section to fetch (repeatable)")
-    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Parallel fund fetches")
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Funds per batch_sync call")
+    parser.add_argument(
+        "--fee-indicator", action="append", help="Fee section to fetch (repeatable)"
+    )
+    parser.add_argument(
+        "--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Parallel fund fetches"
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Funds per batch_sync call"
+    )
     parser.add_argument("--max-funds", type=int, help="Limit total funds (for testing)")
     parser.add_argument(
         "--min-interval-seconds",
         type=float,
         help="Override the per-call rate-limit interval (default: 0.25 with concurrency, 1.0 serial).",
     )
-    parser.add_argument("--reset", action="store_true", help="Discard the saved state and start from scratch")
+    parser.add_argument(
+        "--reset", action="store_true", help="Discard the saved state and start from scratch"
+    )
     parser.add_argument(
         "--provider",
         choices=["auto", "eastmoney", "akshare", "investoday", "tushare"],
@@ -334,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     start_date = args.start_date or (
-        datetime.now(timezone.utc) - timedelta(days=365 * args.nav_years)
+        datetime.now(UTC) - timedelta(days=365 * args.nav_years)
     ).strftime("%Y-%m-%d")
     summary = backfill(
         db_path=Path(args.db),

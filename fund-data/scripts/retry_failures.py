@@ -19,6 +19,7 @@ Typical use::
     # Just show the queue without retrying
     python3 scripts/retry_failures.py --dry-run
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,7 +27,7 @@ import json
 import logging
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -40,7 +41,7 @@ DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _load_failed_codes(db_path: Path) -> list[str]:
@@ -51,15 +52,13 @@ def _load_failed_codes(db_path: Path) -> list[str]:
         try:
             # Oldest failure first, then by code for stability when
             # many codes share the same failed_at.
-            rows = conn.execute(
-                """
+            rows = conn.execute("""
                 SELECT fund_code
                 FROM sync_failures
                 WHERE fund_code IS NOT NULL
                 GROUP BY fund_code
                 ORDER BY MIN(failed_at), fund_code
-                """
-            ).fetchall()
+                """).fetchall()
         except sqlite3.OperationalError:
             return []  # table not yet created
     return [r[0] for r in rows]
@@ -107,7 +106,9 @@ def retry(
         logger.info("nothing to retry: sync_failures is empty")
         return summary
 
-    logger.info("retrying %d failed funds via provider=%s concurrency=%d", len(codes), provider, concurrency)
+    logger.info(
+        "retrying %d failed funds via provider=%s concurrency=%d", len(codes), provider, concurrency
+    )
     if dry_run:
         logger.info("dry run: would have retried %d funds", len(codes))
         return summary
@@ -143,7 +144,9 @@ def retry(
                     message=outcome.get("message", ""),
                 )
             except Exception as exc:  # pragma: no cover - best effort
-                logger.warning("could not record re-failure for %s: %s", outcome.get("fund_code"), exc)
+                logger.warning(
+                    "could not record re-failure for %s: %s", outcome.get("fund_code"), exc
+                )
 
     summary["finished_at"] = utc_now()
     summary["batch_id"] = result.get("batch_id")
@@ -161,10 +164,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--report-year", help="Year for stock/bond/industry holdings")
-    parser.add_argument("--fee-indicator", action="append", help="Fee section to fetch (repeatable)")
-    parser.add_argument("--no-include-all", action="store_true", help="Only retry the hard requirements (snapshot+NAV)")
+    parser.add_argument(
+        "--fee-indicator", action="append", help="Fee section to fetch (repeatable)"
+    )
+    parser.add_argument(
+        "--no-include-all",
+        action="store_true",
+        help="Only retry the hard requirements (snapshot+NAV)",
+    )
     parser.add_argument("--limit", type=int, help="Cap the number of codes to retry")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be retried, do not run")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be retried, do not run"
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
 

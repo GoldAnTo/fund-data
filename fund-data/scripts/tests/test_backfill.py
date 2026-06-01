@@ -1,4 +1,3 @@
-import json
 import sqlite3
 import tempfile
 import unittest
@@ -11,20 +10,18 @@ import sys
 
 sys.path.insert(0, str(sys_path))
 
-from scripts import backfill, fund_data  # noqa: E402
+from scripts import backfill  # noqa: E402
 
 
 def _make_db(path: Path) -> None:
     with sqlite3.connect(path) as conn:
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE funds (
                 fund_code TEXT PRIMARY KEY,
                 fund_name TEXT,
                 fund_type TEXT
             );
-            """
-        )
+            """)
         rows = [
             ("110022", "易方达消费", "股票型"),
             ("000001", "华夏成长", "混合型-偏股"),
@@ -46,7 +43,9 @@ class LoadFundsTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_returns_all_when_no_filter(self):
-        rows = backfill._load_funds(self.db, include_types=None, exclude_types=None, skip_optional_for_currency=True)
+        rows = backfill._load_funds(
+            self.db, include_types=None, exclude_types=None, skip_optional_for_currency=True
+        )
         codes = [c for c, _ in rows]
         self.assertEqual(codes, ["000001", "000003", "000009", "000015", "110022", "510300"])
 
@@ -213,8 +212,14 @@ class BackfillFlowTests(unittest.TestCase):
 
         with patch.object(backfill.fund_data, "batch_sync_funds") as mock_batch:
             mock_batch.return_value = {
-                "batch_id": "test", "total": 0, "ok": 0, "failed": 0,
-                "concurrency": 1, "min_interval_seconds": 0.25, "results": [], "coverage": [],
+                "batch_id": "test",
+                "total": 0,
+                "ok": 0,
+                "failed": 0,
+                "concurrency": 1,
+                "min_interval_seconds": 0.25,
+                "results": [],
+                "coverage": [],
             }
             backfill.backfill(
                 db_path=self.db,

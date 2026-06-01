@@ -1,0 +1,36 @@
+# Pre-commit hooks for the fund-data project.
+# Install once: `pip install pre-commit && pre-commit install`
+# Run manually: `pre-commit run --all-files`
+#
+# The same ruff + black invocations run in CI under .github/workflows/lint.yml,
+# so a green local run == a green CI run.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: ["--fix", "--exit-non-zero-on-fix"]
+        files: ^fund-data/scripts/.*\.py$
+      - id: ruff-format
+        files: ^fund-data/scripts/.*\.py$
+
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        files: ^fund-data/scripts/.*\.py$
+        language_version: python3.11

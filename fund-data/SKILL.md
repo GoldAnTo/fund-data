@@ -1,6 +1,6 @@
 ---
 name: fund-data
-version: 1.0.0
+version: 0.1.0
 description: Search, fetch, normalize, and persist Chinese public fund data for local research workflows with provider fallback across Investoday, Eastmoney, and optional AkShare. Use when agents need to find funds by name/code/theme, pull fund basic information, fetch historical NAV, capture Eastmoney fund snapshots, fetch stock/bond holdings, industry allocation, fee structures, dividends, splits, fund manager data, run batch fund sync with failure queues, populate a local SQLite fund data base, export persisted fund datasets, or build repeatable fund-data ingestion flows. Trigger on requests mentioning 基金搜索, 基金数据, 基金净值, 基金持仓, 基金经理, 基金费率, 基金行业配置, 批量同步, 失败队列, AkShare fallback, 多源切换, 基金数据底座, fund search, fund NAV, local fund database, batch sync, or persistent fund data sync.
 homepage: https://github.com/GoldAnTo/fund-data
 tags:

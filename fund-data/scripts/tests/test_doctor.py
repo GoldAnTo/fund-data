@@ -22,9 +22,9 @@ class CheckDbTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "fund_data.sqlite"
             import sqlite3
+
             with sqlite3.connect(db) as conn:
-                conn.executescript(
-                    """
+                conn.executescript("""
                     CREATE TABLE funds (fund_code TEXT PRIMARY KEY);
                     CREATE TABLE nav_history (fund_code TEXT);
                     CREATE TABLE snapshots (fund_code TEXT);
@@ -39,8 +39,7 @@ class CheckDbTests(unittest.TestCase):
                     CREATE TABLE dividends (fund_code TEXT);
                     CREATE TABLE splits (fund_code TEXT);
                     CREATE TABLE fund_managers (manager_name TEXT);
-                    """
-                )
+                    """)
             result = doctor._check_db(db)
             self.assertTrue(result["ok"])
 
@@ -54,6 +53,7 @@ class CheckAkShareTests(unittest.TestCase):
 
     def test_disabled_env_var_short_circuits(self):
         import os
+
         old = os.environ.get("FUND_DATA_DISABLE_AKSHARE")
         os.environ["FUND_DATA_DISABLE_AKSHARE"] = "1"
         try:
@@ -94,6 +94,7 @@ class CheckSyncFailuresTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "test.sqlite"
             import sqlite3
+
             with sqlite3.connect(db) as conn:
                 conn.execute("CREATE TABLE sync_failures (id INTEGER)")
             result = doctor._check_sync_failures(db)

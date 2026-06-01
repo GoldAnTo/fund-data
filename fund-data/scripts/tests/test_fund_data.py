@@ -13,7 +13,6 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import fund_data
 
-
 SEARCH_PAYLOAD = json.dumps(
     {
         "ErrCode": 0,
@@ -113,14 +112,12 @@ class FundDataParserTests(unittest.TestCase):
         self.assertEqual(rows[0]["source"], "eastmoney.fundcode_search")
 
     def test_parse_fund_codes_accepts_lines_commas_comments_and_dedupes(self):
-        codes = fund_data.parse_fund_codes(
-            """
+        codes = fund_data.parse_fund_codes("""
             # core watchlist
             110022, 000001
             006600 人保沪深300A
             110022
-            """
-        )
+            """)
 
         self.assertEqual(codes, ["110022", "000001", "006600"])
 
@@ -167,9 +164,9 @@ class FundDataProviderTests(unittest.TestCase):
         wondering why the chain returned empty results."""
 
         original_akshare_init = fund_data.AkshareProvider.__init__
-        fund_data.AkshareProvider.__init__ = lambda self: (
-            _ for _ in ()
-        ).throw(fund_data.ProviderError("akshare is not installed for test"))
+        fund_data.AkshareProvider.__init__ = lambda self: (_ for _ in ()).throw(
+            fund_data.ProviderError("akshare is not installed for test")
+        )
 
         try:
             with self.assertLogs("fund_data", level="WARNING") as log_ctx:
@@ -191,9 +188,9 @@ class FundDataProviderTests(unittest.TestCase):
         is not installed; auto mode is the only one allowed to degrade."""
 
         original_akshare_init = fund_data.AkshareProvider.__init__
-        fund_data.AkshareProvider.__init__ = lambda self: (
-            _ for _ in ()
-        ).throw(fund_data.ProviderError("akshare is not installed for test"))
+        fund_data.AkshareProvider.__init__ = lambda self: (_ for _ in ()).throw(
+            fund_data.ProviderError("akshare is not installed for test")
+        )
 
         try:
             with self.assertRaises(fund_data.ProviderError):
@@ -712,14 +709,33 @@ class FundDataStoreTests(unittest.TestCase):
 
             coverage = store.coverage_rows(fund_code="006600")
 
-            self.assertEqual(store.export_table("fund_profiles", fund_code="006600")[0]["manager"], "周剑")
-            self.assertEqual(store.export_table("bond_holdings", fund_code="006600")[0]["bond_code"], "127045")
-            self.assertEqual(store.export_table("industry_allocations", fund_code="006600")[0]["industry_name"], "制造业")
-            self.assertEqual(store.export_table("industry_allocations", fund_code="006600")[0]["market_value"], 12345.67)
-            self.assertEqual(store.export_table("fee_structures", fund_code="006600")[0]["fee_type"], "申购费率")
-            self.assertEqual(store.export_table("fee_structures", fund_code="006600")[0]["fee_text"], "0.15%")
-            self.assertEqual(store.export_table("dividends", fund_code="006600")[0]["dividend_date"], "2021-01-15")
-            self.assertEqual(store.export_table("splits", fund_code="006600")[0]["split_date"], "2019-01-10")
+            self.assertEqual(
+                store.export_table("fund_profiles", fund_code="006600")[0]["manager"], "周剑"
+            )
+            self.assertEqual(
+                store.export_table("bond_holdings", fund_code="006600")[0]["bond_code"], "127045"
+            )
+            self.assertEqual(
+                store.export_table("industry_allocations", fund_code="006600")[0]["industry_name"],
+                "制造业",
+            )
+            self.assertEqual(
+                store.export_table("industry_allocations", fund_code="006600")[0]["market_value"],
+                12345.67,
+            )
+            self.assertEqual(
+                store.export_table("fee_structures", fund_code="006600")[0]["fee_type"], "申购费率"
+            )
+            self.assertEqual(
+                store.export_table("fee_structures", fund_code="006600")[0]["fee_text"], "0.15%"
+            )
+            self.assertEqual(
+                store.export_table("dividends", fund_code="006600")[0]["dividend_date"],
+                "2021-01-15",
+            )
+            self.assertEqual(
+                store.export_table("splits", fund_code="006600")[0]["split_date"], "2019-01-10"
+            )
             self.assertEqual(store.export_table("fund_managers")[0]["manager_name"], "周剑")
             self.assertEqual(coverage[0]["has_profile"], 1)
             self.assertEqual(coverage[0]["bond_holding_rows"], 1)
@@ -1075,11 +1091,14 @@ class FundDataStoreTests(unittest.TestCase):
             self.assertEqual(result["failed"], 0)
             self.assertEqual(result["concurrency"], 4)
             self.assertEqual(result["min_interval_seconds"], 0.25)
-            self.assertEqual(set(r["fund_code"] for r in result["results"]),
-                             {"110022", "000001", "006600", "510300"})
+            self.assertEqual(
+                {r["fund_code"] for r in result["results"]},
+                {"110022", "000001", "006600", "510300"},
+            )
             self.assertLess(elapsed, 0.5, f"expected concurrent execution, got {elapsed:.2f}s")
             deltas = sorted(
-                t2 - t1 for t1, t2 in zip(concurrent_invocations, concurrent_invocations[1:])
+                t2 - t1
+                for t1, t2 in zip(concurrent_invocations, concurrent_invocations[1:], strict=False)
             )
             self.assertGreater(
                 sum(1 for d in deltas if d < 0.05),
@@ -1119,13 +1138,21 @@ class FundDataStoreTests(unittest.TestCase):
             store = fund_data.FundDataStore(db_path)
             store.upsert_funds(
                 [
-                    {"fund_code": "110022", "fund_name": "基金A", "fund_type": "股票型", "source": "t"},
-                    {"fund_code": "000001", "fund_name": "基金B", "fund_type": "债券型", "source": "t"},
+                    {
+                        "fund_code": "110022",
+                        "fund_name": "基金A",
+                        "fund_type": "股票型",
+                        "source": "t",
+                    },
+                    {
+                        "fund_code": "000001",
+                        "fund_name": "基金B",
+                        "fund_type": "债券型",
+                        "source": "t",
+                    },
                 ]
             )
-            store.upsert_profile(
-                {"fund_code": "110022", "fund_name": "基金A", "fund_company": "X"}
-            )
+            store.upsert_profile({"fund_code": "110022", "fund_name": "基金A", "fund_company": "X"})
             store.upsert_nav_history("110022", [{"nav_date": "2024-01-31", "unit_nav": 1.0}])
             store.upsert_nav_history("000001", [{"nav_date": "2024-01-31", "unit_nav": 1.0}])
 
@@ -1135,7 +1162,9 @@ class FundDataStoreTests(unittest.TestCase):
             self.assertEqual(by_code["110022"]["completeness"], 0.25)
             self.assertEqual(
                 sorted(by_code["110022"]["missing"]),
-                sorted(["stock_holdings", "bond_holdings", "industry", "fees", "dividends", "splits"]),
+                sorted(
+                    ["stock_holdings", "bond_holdings", "industry", "fees", "dividends", "splits"]
+                ),
             )
             self.assertEqual(by_code["000001"]["completeness"], 0.125)
             self.assertIn("profile", by_code["000001"]["missing"])
@@ -1147,7 +1176,12 @@ class FundDataStoreTests(unittest.TestCase):
             store.upsert_funds(
                 [
                     {"fund_code": "110022", "fund_name": "A", "fund_type": "股票型", "source": "t"},
-                    {"fund_code": "000015", "fund_name": "B", "fund_type": "债券型-纯债", "source": "t"},
+                    {
+                        "fund_code": "000015",
+                        "fund_name": "B",
+                        "fund_type": "债券型-纯债",
+                        "source": "t",
+                    },
                 ]
             )
             report = fund_data.coverage_report(db_path=db_path, fund_type="债券")

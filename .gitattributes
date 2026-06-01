@@ -1,0 +1,37 @@
+# Git attributes — normalize line endings, mark generated files,
+# and tell GitHub which file types to count as code for the language
+# stats on the repo home page.
+
+# --- Line endings ---------------------------------------------------------
+# Normalize everything to LF in the index. The .gitattributes below
+# marks the files most likely to come in CRLF (Windows) as text so the
+# normalization actually happens.
+*               text=auto eol=lf
+
+# These are explicitly text and should be checked out as LF.
+*.py            text eol=lf
+*.md            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.json          text eol=lf
+*.toml          text eol=lf
+*.txt           text eol=lf
+*.sh            text eol=lf
+*.sql           text eol=lf
+
+# Windows batch files must keep CRLF so the shebang / cmd parser is happy.
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+*.ps1           text eol=crlf
+
+# --- Generated / vendored -------------------------------------------------
+fund-data/data/backfill_logs/  linguist-generated
+fund-data/data/backfill_state.json  linguist-generated
+fund-data/data/backfill_summary.json  linguist-generated
+fund-data/data/fund_data.sqlite  binary diff=sqlite
+
+# --- Linguist overrides ---------------------------------------------------
+# Don't count the vendored skill fixtures / data dumps as code.
+fund-data/data/**  linguist-vendored
+fund-data/scripts/tests/fixtures/**  linguist-vendored
+docs/  linguist-documentation

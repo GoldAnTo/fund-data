@@ -1,0 +1,150 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fund-data"
+version = "0.1.0"
+description = "Local Chinese public fund data base with multi-provider fallback (Eastmoney, AkShare, Tushare, Investoday). Ships as a Codex / Claude / OpenClaw skill."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [
+  { name = "GoldAnTo" },
+]
+keywords = ["fund", "finance", "eastmoney", "akshare", "tushare", "investoday", "sqlite", "chinese-market", "data-pipeline", "skill"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Financial and Insurance Industry",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+  "akshare>=1.18.0,<2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "black>=24.0",
+  "ruff>=0.6.0",
+  "pre-commit>=3.5",
+  "mypy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/GoldAnTo/fund-data"
+Issues = "https://github.com/GoldAnTo/fund-data/issues"
+Changelog = "https://github.com/GoldAnTo/fund-data/blob/main/CHANGELOG.md"
+
+[project.scripts]
+fund-cli = "scripts.fund_cli:main"
+fund-backfill = "scripts.backfill:main"
+fund-doctor = "scripts.doctor:main"
+fund-retry-failures = "scripts.retry_failures:main"
+fund-coverage-report = "scripts.coverage_report:main"
+fund-install-skill = "scripts.install_skill:main"
+
+[tool.setuptools]
+package-dir = { "scripts" = "fund-data/scripts" }
+# Skill layout — the `fund-data/` directory IS the skill, not a Python
+# package. We only expose the `scripts` subpackage to Python so the
+# `fund-cli` console script works, and leave the rest of the skill
+# files (SKILL.md, references/, agents/) as plain data files.
+include-package-data = true
+
+[tool.setuptools.package-data]
+"scripts" = ["tests/fixtures/*.json", "tests/fixtures/*.txt"]
+
+[tool.setuptools.data-files]
+"fund_data_skill" = [
+  "fund-data/SKILL.md",
+  "fund-data/SKILLS.md",
+  "fund-data/PROVIDERS.md",
+  "fund-data/AGENTS.md",
+  "fund-data/references/*.md",
+  "fund-data/agents/*.yaml",
+]
+
+# ---- Ruff -----------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+  "fund-data/data",
+  "fund-data/scripts/tests/fixtures",
+  "docs",
+]
+
+[tool.ruff.lint]
+# Keep the default rule set small — we have an existing project and a
+# permissive style. The "E + F + W" trio catches real bugs and
+# formatting drift without churning every file on the first commit.
+select = [
+  "E",     # pycodestyle errors
+  "F",     # pyflakes
+  "W",     # pycodestyle warnings
+  "I",     # isort (import order)
+  "B",     # bugbear (common pitfalls)
+  "UP",    # pyupgrade (modernize syntax)
+  "C4",    # flake8-comprehensions
+  "SIM",   # flake8-simplify
+]
+ignore = [
+  "E501",  # line length — we have a long-line tolerance for table-ish output
+  "B008",  # function call in default argument — used widely in argparse
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests can be a little more relaxed.
+"fund-data/scripts/tests/*" = [
+  "B011",  # `assert False` is fine inside a unittest method
+  "E402",  # tests import scripts/ as a package via sys.path.insert() before the import
+  "UP022", # `subprocess.run(..., stdout=PIPE, stderr=PIPE)` reads cleaner than `capture_output=True` for our subprocess-based CLI tests
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["scripts", "fund_data"]
+
+# ---- Black ----------------------------------------------------------------
+# Black is the source of truth for formatting. Ruff's formatter
+# (optional) is intentionally NOT enabled — one formatter, no fights.
+
+[tool.black]
+line-length = 100
+target-version = ["py311", "py312", "py313"]
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    \.git
+  | \.venv
+  | \.venv-akshare
+  | build
+  | dist
+  | fund-data/data
+)/
+'''
+
+# ---- MyPy -----------------------------------------------------------------
+# Strict-ish — we already use type hints in the new code. The store
+# module has a few `Any` from sqlite3 rows; the ignore lets the
+# existing code stay green while we tighten it incrementally.
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = false
+ignore_missing_imports = true
+exclude = [
+  "fund-data/data",
+  "fund-data/scripts/tests/fixtures",
+  "docs",
+]

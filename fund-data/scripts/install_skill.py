@@ -11,14 +11,15 @@ By default the installer creates a symlink so local code changes show
 up immediately for the agent. Use --copy to mirror the directory
 instead (matches the manual workflow described in SKILL.md).
 """
+
 from __future__ import annotations
 
 import argparse
 import os
 import shutil
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 SKILL_NAME = "fund-data"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -105,7 +106,7 @@ def _uninstall_one(target: str, dest: Path) -> str:
     if dest.is_symlink() or dest.is_file():
         dest.unlink()
         return f"  [{target}] OK   — removed symlink {dest}"
-    if copy := "--copy" in sys.argv:
+    if "--copy" in sys.argv:
         shutil.rmtree(dest)
         return f"  [{target}] OK   — removed directory {dest}"
     # refuse to remove real directories unless --force is passed
