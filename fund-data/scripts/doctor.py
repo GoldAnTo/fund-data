@@ -13,6 +13,7 @@ problems so the operator can fix them before the first batch fails:
 
 Exits non-zero if any check fails, so it can gate CI or a backfill.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,6 +23,7 @@ import sqlite3
 import subprocess
 import sys
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -31,6 +33,8 @@ import fund_data  # noqa: E402
 
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"
 DEFAULT_VENV = SCRIPT_DIR.parent.parent / ".venv-akshare"
+DEFAULT_BACKFILL_STATE = SCRIPT_DIR.parent / "data" / "backfill_state.json"
+DEFAULT_STALE_HOURS = 24.0
 
 REQUIRED_TABLES = (
     "funds",
@@ -59,9 +63,12 @@ def _check_db(db_path: Path) -> dict[str, object]:
         return {"ok": False, "message": f"database not found at {db_path}"}
     try:
         with sqlite3.connect(db_path) as conn:
-            existing = {r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()}
+            existing = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
             missing = [t for t in REQUIRED_TABLES if t not in existing]
         if missing:
             return {"ok": False, "message": f"missing tables: {missing}"}
@@ -83,6 +90,7 @@ def _check_akshare(venv: Path) -> dict[str, object]:
     # 1. Current Python.
     try:
         import akshare  # type: ignore  # noqa: F401
+
         return {"ok": True, "version": akshare.__version__, "source": "current python"}
     except ImportError:
         pass
@@ -98,11 +106,15 @@ def _check_akshare(venv: Path) -> dict[str, object]:
         if not candidate.is_file():
             continue
         try:
-            version = subprocess.check_output(
-                [str(candidate), "-c", "import akshare; print(akshare.__version__)"],
-                stderr=subprocess.DEVNULL,
-                timeout=15,
-            ).decode().strip()
+            version = (
+                subprocess.check_output(
+                    [str(candidate), "-c", "import akshare; print(akshare.__version__)"],
+                    stderr=subprocess.DEVNULL,
+                    timeout=15,
+                )
+                .decode()
+                .strip()
+            )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
             return {
                 "ok": False,
@@ -142,9 +154,7 @@ def _check_eastmoney() -> dict[str, object]:
 def _check_providers() -> dict[str, object]:
     """Make sure each provider can at least be constructed."""
     result: dict[str, object] = {}
-    for name, builder in (
-        ("eastmoney", lambda: fund_data.EastmoneyProvider()),
-    ):
+    for name, builder in (("eastmoney", lambda: fund_data.EastmoneyProvider()),):
         try:
             builder()
             result[name] = {"ok": True}
@@ -185,9 +195,10 @@ def _check_coverage(db_path: Path) -> dict[str, object]:
     if not db_path.is_file():
         return {"ok": True, "skipped": "db missing"}
     if "funds" not in {
-        r[0] for r in sqlite3.connect(db_path).execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        r[0]
+        for r in sqlite3.connect(db_path)
+        .execute("SELECT name FROM sqlite_master WHERE type='table'")
+        .fetchall()
     }:
         return {"ok": True, "skipped": "no funds table"}
     report = fund_data.coverage_report(db_path=db_path, only_incomplete=True, limit=5)
@@ -198,6 +209,82 @@ def _check_coverage(db_path: Path) -> dict[str, object]:
         "incomplete_examples": len(report),
         "min_completeness": min((r["completeness"] for r in report), default=None),
     }
+
+
+def _check_backfill_stale(
+    state_path: Path,
+    db_path: Path,
+    *,
+    stale_hours: float = DEFAULT_STALE_HOURS,
+) -> dict[str, object]:
+    """A backfill run is "stale" when the state file says the run is in
+    progress but ``updated_at`` is older than ``stale_hours``. This usually
+    means the process died, the runner was recycled, or a cron job was
+    disabled — the operator should re-launch or accept and delete the
+    state file.
+
+    A run is also reported as stale when ``last_batch_id`` is missing
+    even though ``started_at`` is older than the threshold (the run
+    never produced a single batch before going silent).
+    """
+    if not state_path.is_file():
+        return {"ok": True, "skipped": "no backfill state file"}
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"ok": False, "message": f"could not read {state_path}: {exc}"}
+
+    started_at = state.get("started_at")
+    updated_at = state.get("updated_at")
+    last_batch_id = state.get("last_batch_id")
+    completed = state.get("completed_codes") or []
+    failed = state.get("failed_codes") or []
+    totals = state.get("totals") or {}
+
+    if not updated_at:
+        return {
+            "ok": False,
+            "message": "backfill state file has no updated_at; cannot determine staleness",
+            "started_at": started_at,
+            "last_batch_id": last_batch_id,
+        }
+
+    try:
+        updated_dt = datetime.fromisoformat(updated_at)
+    except ValueError:
+        return {"ok": False, "message": f"updated_at is not ISO-8601: {updated_at!r}"}
+
+    age = datetime.now(UTC) - updated_dt
+    total_funds = 0
+    if db_path.is_file():
+        try:
+            with sqlite3.connect(db_path) as conn:
+                total_funds = int(conn.execute("SELECT COUNT(*) FROM funds").fetchone()[0])
+        except sqlite3.OperationalError:
+            pass
+    finished = total_funds and len(completed) >= total_funds
+    is_stale = age > timedelta(hours=stale_hours) and not finished
+
+    result: dict[str, object] = {
+        "ok": not is_stale,
+        "started_at": started_at,
+        "updated_at": updated_at,
+        "age_hours": round(age.total_seconds() / 3600, 2),
+        "stale_threshold_hours": stale_hours,
+        "completed": len(completed),
+        "failed": len(failed),
+        "totals": totals,
+        "total_funds": total_funds,
+        "last_batch_id": last_batch_id,
+    }
+    if is_stale:
+        result["hint"] = (
+            "the backfill state has not progressed in "
+            f"{age.total_seconds() / 3600:.1f}h; re-launch `scripts/backfill.py` "
+            "(resumable) or delete `data/backfill_state.json` if you want "
+            "to start over"
+        )
+    return result
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -227,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
         checks["eastmoney_reachable"] = _check_eastmoney()
     checks["sync_failures"] = _check_sync_failures(db_path)
     checks["coverage"] = _check_coverage(db_path)
+    checks["backfill_stale"] = _check_backfill_stale(DEFAULT_BACKFILL_STATE, db_path)
 
     print(json.dumps(checks, ensure_ascii=False, indent=2))
 
