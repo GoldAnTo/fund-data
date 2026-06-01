@@ -105,14 +105,26 @@ def _select_targets(
     limit: int | None,
 ) -> list[str]:
     """Return the fund codes that still need at least one of the
-    target capabilities. With ``skip_existing=False`` we still return
-    every code so re-runs are explicit overwrites.
+    target capabilities.
+
+    ``skip_existing=True`` (the *broad* form, used by the resumed-run
+    path) means: a fund is "in" the work list if it has *no* row in
+    at least one of the target tables. That keeps the resumed run
+    from re-fetching funds that are already fully covered while
+    still picking up funds that lost a single capability (the common
+    case after a partial backfill such as the fee_structures TypeError
+    that left stock/bond/industry rows intact but never wrote fees).
+
+    ``skip_existing=False`` returns every code so re-runs are
+    explicit overwrites.
     """
     where = ""
     if skip_existing:
-        # A fund is "in" if it has a row in *every* target table. We
-        # only skip the ones that are fully covered.
-        not_in_parts = " AND ".join(
+        # A fund is "in" the work list if it is *missing* a row in
+        # at least one of the target tables. We previously skipped
+        # the opposite (every table populated), which left the
+        # single-table holes untouched.
+        not_in_parts = " OR ".join(
             f"NOT EXISTS (SELECT 1 FROM {t} WHERE {t}.fund_code = f.fund_code)"
             for t in capabilities
         )
