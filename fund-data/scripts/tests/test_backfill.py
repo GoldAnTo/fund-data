@@ -241,5 +241,136 @@ class BackfillFlowTests(unittest.TestCase):
         self.assertEqual(reloaded["completed_codes"], [])
 
 
+class LockRetryTests(unittest.TestCase):
+    """The backfill must survive transient ``database is locked``
+    errors that bubble out of ``fund_data.batch_sync_funds``. The
+    retry uses exponential backoff (2 s, 4 s, 8 s + jitter) and
+    caps at ``LOCK_RETRY_ATTEMPTS`` attempts; on the final failure
+    it propagates the error so the operator can intervene.
+
+    These tests mock ``time.sleep`` so they finish in milliseconds
+    even though the production backoff is several seconds long.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self.tmp.name) / "test.sqlite"
+        _make_db(self.db)
+        self.state = Path(self.tmp.name) / "state.json"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_retries_until_success(self) -> None:
+        ok_batch = {
+            "batch_id": "test",
+            "total": 1,
+            "ok": 1,
+            "failed": 0,
+            "concurrency": 1,
+            "min_interval_seconds": 0.25,
+            "results": [{"fund_code": "110022", "status": "ok"}],
+            "coverage": [],
+        }
+        side_effects = [
+            sqlite3.OperationalError("database is locked"),
+            sqlite3.OperationalError("database is locked"),
+            ok_batch,
+        ]
+        with (
+            patch.object(
+                backfill.fund_data, "batch_sync_funds", side_effect=side_effects
+            ) as mock_batch,
+            patch.object(backfill.time, "sleep") as mock_sleep,
+        ):
+            backfill.backfill(
+                db_path=self.db,
+                state_path=self.state,
+                include_types=None,
+                exclude_types=["货币"],
+                skip_optional_for_currency=True,
+                start_date="2024-01-01",
+                end_date=None,
+                report_year="2024",
+                fee_indicators=None,
+                concurrency=1,
+                batch_size=100,
+                max_funds=None,
+                min_interval_seconds=None,
+                reset=False,
+            )
+        # Two lock failures + one success = three total invocations.
+        self.assertEqual(mock_batch.call_count, 3)
+        # Two backoff sleeps between the three attempts.
+        self.assertEqual(mock_sleep.call_count, 2)
+        # First sleep is ~2 s, second ~4 s, both with jitter.
+        first, second = (c.args[0] for c in mock_sleep.call_args_list)
+        self.assertGreaterEqual(first, 2.0)
+        self.assertLess(first, 4.0)
+        self.assertGreaterEqual(second, 4.0)
+        self.assertLess(second, 6.0)
+
+    def test_propagates_after_max_attempts(self) -> None:
+        with (
+            patch.object(
+                backfill.fund_data,
+                "batch_sync_funds",
+                side_effect=sqlite3.OperationalError("database is locked"),
+            ) as mock_batch,
+            patch.object(backfill.time, "sleep"),
+            self.assertRaises(sqlite3.OperationalError) as ctx,
+        ):
+            backfill.backfill(
+                db_path=self.db,
+                state_path=self.state,
+                include_types=None,
+                exclude_types=["货币"],
+                skip_optional_for_currency=True,
+                start_date="2024-01-01",
+                end_date=None,
+                report_year="2024",
+                fee_indicators=None,
+                concurrency=1,
+                batch_size=100,
+                max_funds=None,
+                min_interval_seconds=None,
+                reset=False,
+            )
+        self.assertIn("database is locked", str(ctx.exception))
+        self.assertEqual(mock_batch.call_count, backfill.LOCK_RETRY_ATTEMPTS)
+
+    def test_does_not_retry_unrelated_operationalerror(self) -> None:
+        """A non-lock OperationalError should propagate immediately —
+        we only want to swallow the specific 'database is locked'
+        message, not every SQLite error."""
+        with (
+            patch.object(
+                backfill.fund_data,
+                "batch_sync_funds",
+                side_effect=sqlite3.OperationalError("no such table: x"),
+            ) as mock_batch,
+            patch.object(backfill.time, "sleep") as mock_sleep,
+            self.assertRaises(sqlite3.OperationalError),
+        ):
+            backfill.backfill(
+                db_path=self.db,
+                state_path=self.state,
+                include_types=None,
+                exclude_types=["货币"],
+                skip_optional_for_currency=True,
+                start_date="2024-01-01",
+                end_date=None,
+                report_year="2024",
+                fee_indicators=None,
+                concurrency=1,
+                batch_size=100,
+                max_funds=None,
+                min_interval_seconds=None,
+                reset=False,
+            )
+        self.assertEqual(mock_batch.call_count, 1)
+        self.assertEqual(mock_sleep.call_count, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
