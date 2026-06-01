@@ -46,12 +46,13 @@ jobs:
     env:
       FUND_DATA_DB: fund-data/data/fund_data.sqlite
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          node-version: "24"
           cache: pip
 
       - name: Install AkShare into a venv
