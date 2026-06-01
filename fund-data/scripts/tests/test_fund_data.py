@@ -511,6 +511,9 @@ class FundDataProviderTests(unittest.TestCase):
             def __init__(self):
                 self.api_key = "test"
                 self.base_url = "https://example.test"
+                self._catalog_cache = None
+                self._catalog_cache_ts = 0.0
+                self._catalog_cache_ttl = 3600.0
 
             def _get_json(self, path, params):
                 if path == "/fund/all":

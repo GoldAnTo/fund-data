@@ -1207,14 +1207,27 @@ class InvestodayProvider:
     name = PROVIDER_INVESTODAY
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
-        self.api_key = api_key or os.environ.get("INVESTDATA_API_KEY")
+        # Accept either env var. ``INVESTODAY_API_KEY`` is the canonical
+        # name we expose in PROVIDERS.md / SKILL.md; ``INVESTDATA_API_KEY``
+        # is the legacy / Investoday-console-exported name and is kept
+        # as a fallback for older setups.
+        self.api_key = (
+            api_key or os.environ.get("INVESTODAY_API_KEY") or os.environ.get("INVESTDATA_API_KEY")
+        )
         if not self.api_key:
-            raise ProviderError("INVESTDATA_API_KEY is not set")
+            raise ProviderError("INVESTODAY_API_KEY (or INVESTDATA_API_KEY) is not set")
         self.base_url = (
             base_url
             or os.environ.get("FINANCIAL_DATA_BASE_URL")
             or "https://data-api.investoday.net/data"
         ).rstrip("/")
+        # Cache the /fund/all catalog for the lifetime of this provider
+        # instance so repeated calls (search, profile per code, list) do
+        # not re-hit the network. The catalog is ~27k records / ~10 MB;
+        # the 1-hour TTL is a safety net for long-lived backfills.
+        self._catalog_cache: list[dict[str, Any]] | None = None
+        self._catalog_cache_ts: float = 0.0
+        self._catalog_cache_ttl: float = 3600.0
 
     def _get_json(self, path: str, params: dict[str, Any]) -> Any:
         url = f"{self.base_url}{path}"
@@ -1225,39 +1238,115 @@ class InvestodayProvider:
             data = response.read().decode("utf-8", errors="replace")
         return json.loads(data)
 
-    def fund_list(self) -> list[dict[str, Any]]:
-        records = _extract_payload_records(
-            self._get_json("/fund/all", {"pageNum": 1, "pageSize": 10000})
+    @staticmethod
+    def _normalize_fund_record(item: dict[str, Any]) -> dict[str, Any] | None:
+        code = _first_value(item, "fundCode", "fund_code", "code", "FCODE", "基金代码")
+        name = _first_value(
+            item, "fundName", "fund_name", "name", "SHORTNAME", "基金名称", "基金简称"
         )
-        rows = []
-        for item in records:
-            code = _first_value(item, "fundCode", "fund_code", "code", "FCODE", "基金代码")
-            name = _first_value(
-                item, "fundName", "fund_name", "name", "SHORTNAME", "基金名称", "基金简称"
-            )
-            if not code or not name:
-                continue
-            rows.append(
-                {
-                    "fund_code": normalize_fund_code(code),
-                    "fund_name": str(name),
-                    "fund_type": str(
-                        _first_value(item, "fundType", "fund_type", "type", "基金类型") or ""
+        if not code or not name:
+            return None
+        return {
+            "fund_code": normalize_fund_code(code),
+            "fund_name": str(name),
+            "fund_type": str(_first_value(item, "fundType", "fund_type", "type", "基金类型") or ""),
+            "company": str(
+                _first_value(item, "company", "fundCompany", "managerCompany", "基金公司") or ""
+            ),
+            "manager": str(_first_value(item, "manager", "fundManager", "基金经理") or ""),
+            "nav": _to_float(_first_value(item, "nav", "unitNav", "DWJZ", "单位净值")),
+            "nav_date": str(_first_value(item, "navDate", "date", "FSRQ", "净值日期") or ""),
+            "other_names": str(_first_value(item, "otherNames", "alias", "aliases") or ""),
+            "source": "investoday.fund_all",
+            # Pass-through profile fields so ``profile()`` can build
+            # a full row without a second API call.
+            "_raw": item,
+        }
+
+    def _fetch_catalog(self) -> list[dict[str, Any]]:
+        """Auto-paginate ``/fund/all`` until the full universe is in hand.
+
+        The Investoday API caps ``pageSize`` at 500. The total universe
+        is ~27k funds, so we walk ~55 pages and stop early when the
+        page is short.
+        """
+        rows: list[dict[str, Any]] = []
+        page = 1
+        page_size = 500
+        while True:
+            payload = self._get_json("/fund/all", {"pageNum": page, "pageSize": page_size})
+            records = _extract_payload_records(payload)
+            if not records:
+                break
+            for item in records:
+                row = self._normalize_fund_record(item)
+                if row is not None:
+                    rows.append(row)
+            total = int(payload.get("totalCount") or 0)
+            if total and page * page_size >= total:
+                break
+            if len(records) < page_size:
+                break
+            page += 1
+            if page > 200:  # safety stop; 200 * 500 = 100k, well over 27k
+                break
+        return rows
+
+    def _get_catalog(self) -> list[dict[str, Any]]:
+        now = time.time()
+        if self._catalog_cache is None or (now - self._catalog_cache_ts) > self._catalog_cache_ttl:
+            self._catalog_cache = self._fetch_catalog()
+            self._catalog_cache_ts = now
+        return self._catalog_cache
+
+    def fund_list(self) -> list[dict[str, Any]]:
+        """Return every fund in the Investoday catalog (auto-paginated).
+
+        Strips the internal ``_raw`` payload before returning so callers
+        do not accidentally re-serialize the upstream record.
+        """
+        return [{k: v for k, v in row.items() if k != "_raw"} for row in self._get_catalog()]
+
+    def profile(self, code: str) -> dict[str, Any]:
+        """Look up the profile for ``code`` from the cached catalog.
+
+        Raises :class:`ProviderError` if the code is not in the
+        Investoday universe, or if the catalog cannot be fetched.
+        """
+        target = normalize_fund_code(code)
+        for row in self._get_catalog():
+            if row["fund_code"] == target:
+                raw = row.get("_raw") or {}
+                # ``establishDate`` comes as ``"2010-08-20 00:00:00"``;
+                # trim to ISO date for the ``establishment_date`` slot.
+                raw_establish = raw.get("establishDate") or ""
+                est_date = str(raw_establish)[:10] if raw_establish else ""
+                return {
+                    "fund_code": target,
+                    "fund_name": str(raw.get("fundName") or row["fund_name"]),
+                    "full_name": str(
+                        raw.get("fundNameFull") or raw.get("fundName") or row["fund_name"]
                     ),
-                    "company": str(
-                        _first_value(item, "company", "fundCompany", "managerCompany", "基金公司")
-                        or ""
+                    "fund_type": str(raw.get("fundType") or row.get("fund_type") or ""),
+                    "issue_date": "",
+                    "establishment_date": est_date,
+                    "asset_size": None,
+                    "asset_size_date": "",
+                    "fund_company": str(
+                        raw.get("managementCompanyName") or row.get("company") or ""
                     ),
-                    "manager": str(_first_value(item, "manager", "fundManager", "基金经理") or ""),
-                    "nav": _to_float(_first_value(item, "nav", "unitNav", "DWJZ", "单位净值")),
-                    "nav_date": str(
-                        _first_value(item, "navDate", "date", "FSRQ", "净值日期") or ""
-                    ),
-                    "other_names": str(_first_value(item, "otherNames", "alias", "aliases") or ""),
+                    "custodian": str(raw.get("custodianName") or ""),
+                    "manager": "",
+                    "benchmark": str(raw.get("benchmarkCode") or ""),
+                    "tracking_target": "",
+                    "is_qdii": bool(int(raw.get("isQdii") or 0)),
+                    "is_fof": bool(int(raw.get("isFof") or 0)),
+                    "investment_objective": str(raw.get("investmentObjective") or ""),
+                    "investment_strategy": str(raw.get("investmentStrategy") or ""),
+                    "risk_return_profile": str(raw.get("riskReturnProfile") or ""),
                     "source": "investoday.fund_all",
                 }
-            )
-        return rows
+        raise ProviderError(f"investoday: {code} not found in /fund/all catalog")
 
     def search_funds(self, keyword: str) -> list[dict[str, Any]]:
         keyword_text = str(keyword).lower()
