@@ -122,6 +122,57 @@ def _select_targets(
         return [r[0] for r in conn.execute(sql)]
 
 
+# Tables that the per-fund upserts land in. The merge step copies them
+# row-for-row from a separate (temporary) DB into the main DB at the
+# end of the run; matching the per-table unique key makes
+# ``INSERT OR REPLACE`` the right conflict resolution so the freshest
+# data wins.
+MERGE_TABLES = (
+    "stock_holdings",
+    "bond_holdings",
+    "industry_allocations",
+    "dividends",
+    "splits",
+    "fee_structures",
+)
+
+
+def _merge_separate_db(separate_db: Path, main_db: Path) -> dict[str, int]:
+    """Copy every row from ``separate_db`` into ``main_db`` using
+    ``INSERT OR REPLACE``. Returns ``{table_name: rows_copied}``.
+
+    The caller is responsible for ensuring ``separate_db`` already
+    has the target schema (run :func:`FundDataStore.ensure_schema`
+    on it before invoking this). The merge holds the main DB write
+    lock for the duration, so run it once at the end of the bulk
+    sync, not in a loop.
+    """
+    counts: dict[str, int] = {}
+    if not separate_db.is_file():
+        raise FileNotFoundError(f"separate DB not found: {separate_db}")
+    with sqlite3.connect(main_db, timeout=30) as main_conn:
+        # ATTACH is a connection-level setting. We must issue it on
+        # the *target* connection so the rows land in main.
+        main_conn.execute(f"ATTACH DATABASE ? AS sep", (str(separate_db),))
+        try:
+            main_conn.execute("BEGIN")
+            for table in MERGE_TABLES:
+                # The ``sep.`` qualifier is required because both DBs
+                # declare the table; ``OR REPLACE`` is the conflict
+                # resolution for the per-table unique key.
+                cur = main_conn.execute(
+                    f"INSERT OR REPLACE INTO main.{table} SELECT * FROM sep.{table}"
+                )
+                counts[table] = cur.rowcount
+            main_conn.execute("COMMIT")
+        except Exception:
+            main_conn.execute("ROLLBACK")
+            raise
+        finally:
+            main_conn.execute("DETACH DATABASE sep")
+    return counts
+
+
 def _sync_one_fund(
     code: str,
     provider: fund_data.AkshareProvider,
@@ -203,6 +254,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=50,
         help="Print a progress line every N funds (default: 50).",
+    )
+    parser.add_argument(
+        "--separate-db",
+        default=None,
+        help=(
+            "Write to a fresh SQLite file at this path and merge the "
+            "rows into the main DB at the end. Use this when the main "
+            "DB is being written by another process (e.g. the main "
+            "backfill) — avoids 'database is locked' crashes that "
+            "would otherwise lose the 5-hour progress of the other writer."
+        ),
     )
     parser.add_argument(
         "--log-level",

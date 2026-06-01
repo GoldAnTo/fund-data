@@ -564,6 +564,18 @@ class FundDataProviderTests(unittest.TestCase):
 
 
 class FundDataStoreTests(unittest.TestCase):
+    def test_store_connections_use_wal_and_long_busy_timeout(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            store = fund_data.FundDataStore(db_path)
+
+            with store.connect() as conn:
+                journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+                busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+
+            self.assertEqual(journal_mode.lower(), "wal")
+            self.assertGreaterEqual(busy_timeout, 30000)
+
     def test_store_upserts_funds_nav_snapshot_and_raw_responses(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "fund_data.sqlite"

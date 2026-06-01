@@ -70,6 +70,7 @@ python3 scripts/fund_cli.py list --provider eastmoney --limit 100
 python3 scripts/fund_cli.py nav 110022 --provider eastmoney
 python3 scripts/fund_cli.py holdings 110022 --provider akshare --report-year 2024
 python3 scripts/fund_cli.py profile 110022 --provider akshare
+python3 scripts/fund_cli.py profile 110022 --provider tushare
 ```
 
 `auto` tries `investoday` first when `INVESTDATA_API_KEY` is set. Without a key, search/NAV use Eastmoney first and fall back to AkShare if installed. Holdings, profile, industry, fee, dividend/split, and manager commands use AkShare-backed free sources until a structured provider is configured.

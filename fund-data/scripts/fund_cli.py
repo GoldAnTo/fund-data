@@ -6,7 +6,13 @@ import json
 import sys
 from pathlib import Path
 
-import fund_data
+try:
+    from . import fund_data
+except ImportError:  # pragma: no cover - exercised by direct script execution
+    import fund_data
+
+
+PROVIDER_CHOICES = ["auto", "eastmoney", "akshare", "investoday", "tushare"]
 
 
 def _read_offline_raw(path: str | None) -> str | None:
@@ -34,7 +40,7 @@ def _add_offline_arg(parser: argparse.ArgumentParser) -> None:
 def _add_provider_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--provider",
-        choices=["auto", "eastmoney", "akshare", "investoday"],
+        choices=PROVIDER_CHOICES,
         default="auto",
         help="Data provider. auto tries configured structured sources first, then free fallbacks.",
     )

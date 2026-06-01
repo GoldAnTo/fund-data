@@ -163,6 +163,38 @@ class FundCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)[0]["fund_code"], "006600")
 
+    def test_cli_accepts_tushare_provider_argument(self):
+        parsed = fund_cli.build_parser().parse_args(["search", "沪深300", "--provider", "tushare"])
+
+        self.assertEqual(parsed.provider, "tushare")
+
+    def test_console_script_entrypoint_imports_from_installed_package(self):
+        repo_root = SCRIPT_DIR.parents[1]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            venv = Path(tmpdir) / "venv"
+            subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
+            python = venv / "bin" / "python"
+            fund_cli_bin = venv / "bin" / "fund-cli"
+            install = subprocess.run(
+                [str(python), "-m", "pip", "install", "--no-deps", "-e", str(repo_root)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(install.returncode, 0, install.stderr)
+
+            result = subprocess.run(
+                [str(fund_cli_bin), "--help"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Search, fetch, persist", result.stdout)
+
     def test_holdings_with_unavailable_akshare_returns_clear_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "fund_data.sqlite"

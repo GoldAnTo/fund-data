@@ -88,16 +88,54 @@ def _install_one(target: str, dest: Path, *, copy: bool) -> str:
 def _copy_into(src: Path, dst: Path) -> None:
     """Copy ``src`` to ``dst``, recursing into directories and overwriting
     files. Preserves any extra files in ``dst`` that are not in ``src``."""
+    if _should_skip_install_path(src):
+        if dst.is_symlink() or dst.is_file():
+            dst.unlink()
+        elif dst.is_dir():
+            shutil.rmtree(dst)
+        return
     if dst.is_symlink():
         dst.unlink()
     if src.is_dir():
         dst.mkdir(parents=True, exist_ok=True)
         for child in src.iterdir():
             _copy_into(child, dst / child.name)
+        for child in list(dst.iterdir()):
+            if _should_skip_install_path(child):
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
     else:
         if dst.is_dir():
             shutil.rmtree(dst)
         shutil.copy2(src, dst)
+
+
+def _should_skip_install_path(path: Path) -> bool:
+    """Return true for local runtime artifacts that do not belong in a skill install."""
+    artifact_names = {
+        ".DS_Store",
+        ".ruff_cache",
+        ".pytest_cache",
+        "__pycache__",
+        "backfill_logs",
+        "raw_responses",
+        "sync_state",
+        "backfill_state.json",
+        "backfill_summary.json",
+    }
+    if any(part in artifact_names for part in path.parts):
+        return True
+    name = path.name
+    return (
+        name.endswith(".pyc")
+        or name.endswith(".pyo")
+        or name.endswith(".sqlite")
+        or name.endswith(".sqlite-journal")
+        or name.endswith(".sqlite-wal")
+        or name.endswith(".sqlite-shm")
+    )
 
 
 def _uninstall_one(target: str, dest: Path) -> str:

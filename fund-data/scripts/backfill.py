@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import random
 import sqlite3
 import sys
 import time
@@ -42,6 +43,15 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import fund_data  # noqa: E402
 
 logger = logging.getLogger("fund_data.backfill")
+
+# SQLite is a single-writer data base. A concurrent ``batch_sync_funds``
+# call (or a developer running a smoke test) can hold the lock long
+# enough to make the next batch raise ``OperationalError: database is
+# locked``. We retry each batch a few times with exponential backoff
+# before giving up — a 9 s wait is cheaper than re-running the
+# whole 6-hour backfill.
+LOCK_RETRY_ATTEMPTS = 3
+LOCK_RETRY_BASE_SECONDS = 2.0
 
 # Fund types where the *hard* snapshot + NAV fetches still apply but the
 # optional datasets are guaranteed to be empty. We skip those optional
@@ -252,21 +262,49 @@ def backfill(
                 {k: v for k, v in flags.items() if v},
             )
             batch_started = time.monotonic()
-            result = fund_data.batch_sync_funds(
-                batch,
-                start_date=start_date,
-                end_date=end_date,
-                page=1,
-                per=200,
-                db_path=db_path,
-                provider=provider,
-                fee_indicators=fee_indicators,
-                report_year=report_year,
-                batch_id=batch_id,
-                concurrency=concurrency,
-                min_interval_seconds=min_interval_seconds,
-                **flags,
-            )
+            result = None
+            for lock_attempt in range(1, LOCK_RETRY_ATTEMPTS + 1):
+                try:
+                    result = fund_data.batch_sync_funds(
+                        batch,
+                        start_date=start_date,
+                        end_date=end_date,
+                        page=1,
+                        per=200,
+                        db_path=db_path,
+                        provider=provider,
+                        fee_indicators=fee_indicators,
+                        report_year=report_year,
+                        batch_id=batch_id,
+                        concurrency=concurrency,
+                        min_interval_seconds=min_interval_seconds,
+                        **flags,
+                    )
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "database is locked" not in str(exc):
+                        raise
+                    if lock_attempt >= LOCK_RETRY_ATTEMPTS:
+                        logger.error(
+                            "batch %s hit 'database is locked' %d times in a row; "
+                            "aborting. Check the DB for stale writers.",
+                            batch_id,
+                            lock_attempt,
+                        )
+                        raise
+                    backoff = LOCK_RETRY_BASE_SECONDS * (2 ** (lock_attempt - 1))
+                    backoff += random.uniform(0, 1.0)
+                    logger.warning(
+                        "batch %s hit 'database is locked' (attempt %d/%d); "
+                        "backing off %.1fs and retrying: %s",
+                        batch_id,
+                        lock_attempt,
+                        LOCK_RETRY_ATTEMPTS,
+                        backoff,
+                        exc,
+                    )
+                    time.sleep(backoff)
+            assert result is not None  # the loop above either succeeded or raised
             elapsed = time.monotonic() - batch_started
             batch_report = {
                 "batch_id": batch_id,

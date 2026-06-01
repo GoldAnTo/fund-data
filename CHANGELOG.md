@@ -45,7 +45,7 @@ chronological order — see `git log` for the per-commit detail.
 - `SKILL.md` — `version: 1.0.0` → `0.1.0` to match the
   `CHANGELOG.md` and `pyproject.toml` version.
 - `README.md` — status table rewritten with real DB numbers
-  (75 unit tests, 16.93 % snapshot coverage, 2.69 % profile
+  (99 unit tests, 55.34 % snapshot coverage, 98.87 % profile
   coverage); "Known gaps" rewritten to reflect that the v0.1.0
   list (`no CI`, `no nightly sync`, `38 stale failures`,
   `0.03 % coverage`) is done.
@@ -59,6 +59,20 @@ chronological order — see `git log` for the per-commit detail.
 - **Real DB coverage after the Investoday pass**:
   `fund_profiles` 724 / 26,936 (2.69 %) → **26,632 / 26,936
   (98.87 %)** in ~40 s, no extra API quota.
+
+### Fixed
+
+- SQLite writes now use WAL mode and a 30 s busy timeout, which makes
+  long concurrent backfills wait for the writer instead of failing
+  immediately with `database is locked`.
+- `fund_cli.py --provider tushare` now works from the main CLI, matching
+  the provider chain already supported by `backfill.py` and
+  `retry_failures.py`.
+- The installed `fund-cli` console script now imports the package-local
+  `fund_data` module correctly after `pip install -e .`.
+- `scripts/install_skill.py install --copy` now excludes generated data,
+  logs, caches, and SQLite files, and removes stale copies of those
+  artifacts from an existing skill install.
 
 ## 0.1.0 (2026-06-01)
 

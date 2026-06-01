@@ -25,12 +25,12 @@ data without re-deriving the parsing logic every time.
 |---|---|
 | Core library | `fund-data/scripts/fund_data.py` (≈3.0k lines) |
 | CLI | `fund-data/scripts/fund_cli.py` |
-| Tests | **95 unit tests**, all green |
+| Tests | **99 unit tests**, all green |
 | Default DB | `fund-data/data/fund_data.sqlite` (gitignored; rebuild on first run) |
 | Providers | Eastmoney (no key) → AkShare (optional) → Tushare (`TUSHARE_TOKEN`) → Investoday (`INVESTDATA_API_KEY`) |
 | Fund universe | 26,936 funds on first seed |
-| Snapshot coverage | 4,556 / 26,936 = **16.93 %** (Eastmoney backfill in progress) |
-| NAV coverage | 4,529 unique funds / 26,936 = **16.81 %** |
+| Snapshot coverage | 14,907 / 26,936 = **55.34 %** (Eastmoney backfill in progress) |
+| NAV coverage | 14,859 unique funds / 26,936 = **55.16 %** |
 | Profile coverage | 26,632 / 26,936 = **98.87 %** (Investoday `/fund/all`) |
 | CI | test.yml (3.11 / 3.12 / 3.13) + lint.yml (ruff / black) + sync.yml (nightly 02:00 UTC) |
 | License | MIT |
@@ -141,7 +141,7 @@ fixtures — no network required. The same command runs in CI on Python
     │   ├── retry_failures.py
     │   ├── coverage_report.py
     │   ├── install_skill.py
-    │   └── tests/           # 75 unittest cases
+    │   └── tests/           # 99 unittest cases
     └── data/                # SQLite DB + watchlist files (gitignored)
 ```
 
@@ -156,7 +156,7 @@ listed in priority order, not all of them are blockers.
    98.87 % via `scripts/investoday_profile_sync.py` (Investoday
    `/fund/all`); the rest of the L2 portfolio-* family needs a
    higher Investoday tier (see `PROVIDERS.md`) or a `TUSHARE_TOKEN`.
-2. **146 rows in `sync_failures`** at the time of writing. Most are
+2. **148 rows in `sync_failures`** at the time of writing. Most are
    benign (currency funds with no holdings, ETF profile endpoints
    that Eastmoney never implemented). Drain with
    `python3 fund-data/scripts/retry_failures.py --provider eastmoney --limit 200`

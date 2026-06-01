@@ -31,6 +31,11 @@ python3 scripts/install_skill.py install --target claude
 python3 scripts/install_skill.py install --target codex --copy
 ```
 
+Copy refreshes include only the skill source files. Generated runtime
+artifacts such as `data/fund_data.sqlite`, `data/backfill_logs/`,
+`data/backfill_state.json`, `__pycache__/`, and `.DS_Store` are
+excluded so a Codex install stays small and deterministic.
+
 ## Refresh
 
 ```bash
