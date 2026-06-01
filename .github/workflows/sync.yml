@@ -114,8 +114,19 @@ jobs:
         working-directory: fund-data
         run: |
           /tmp/venv-akshare/bin/python scripts/doctor.py --skip-network \
-            > data/doctor-post.log 2>&1 || true
+            > data/doctor-post.log 2>&1
           cat data/doctor-post.log
+
+      - name: Fail workflow if doctor reported any check ok:false
+        if: always()
+        working-directory: fund-data
+        run: |
+          # Belt-and-suspenders: doctor already exits non-zero on failure,
+          # but if any check ever prints ok:false without raising, fail here.
+          if grep -q '"ok": false' data/doctor-post.log; then
+            echo "::error::doctor reported at least one failing check (ok:false)"
+            exit 1
+          fi
 
       - name: Upload backfill summary
         if: always()
