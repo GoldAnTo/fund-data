@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import fund_data
+    from . import fund_cloud, fund_data
 except ImportError:  # pragma: no cover - exercised by direct script execution
+    import fund_cloud
+
     import fund_data
 
 SERVER_NAME = "fund-data"
@@ -286,6 +288,14 @@ TOOLS: list[dict[str, Any]] = [
         },
         required=["table"],
     ),
+    _tool(
+        "fund_cloud_status",
+        "Inspect the local fund-data cloud cache and optionally compare it with a remote manifest.",
+        {
+            "cache_dir": _string_schema("Optional local cloud cache directory."),
+            "manifest_url": _string_schema("Optional remote manifest URL to compare against."),
+        },
+    ),
 ]
 
 
@@ -534,6 +544,13 @@ def _call_fund_export(arguments: dict[str, Any]) -> list[dict[str, Any]]:
     return _limit(rows, arguments)
 
 
+def _call_fund_cloud_status(arguments: dict[str, Any]) -> dict[str, Any]:
+    return fund_cloud.status(
+        cache_dir=_optional_str(arguments, "cache_dir"),
+        manifest_url=_optional_str(arguments, "manifest_url"),
+    )
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "fund_search": _call_fund_search,
     "fund_list": _call_fund_list,
@@ -552,6 +569,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "fund_coverage": _call_fund_coverage,
     "fund_coverage_report": _call_fund_coverage_report,
     "fund_export": _call_fund_export,
+    "fund_cloud_status": _call_fund_cloud_status,
 }
 
 

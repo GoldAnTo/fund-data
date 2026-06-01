@@ -7,7 +7,45 @@ follow [Semantic Versioning](https://semver.org/) once the project reaches
 ## Unreleased
 
 Track of the work in flight toward **0.2.0**. Items land in
-chronological order — see `git log` for the per-commit detail.
+chronological order — see `git log` for the per-commit detail. When
+the Eastmoney resume + akShare bulk sync (both currently running in
+the background) finish, the section below is promoted verbatim to
+`## 0.2.0 (2026-06-XX)` and tagged with `git tag -a v0.2.0`.
+
+### Headline numbers (live during the 0.2.0 work)
+
+- **Profile coverage: 98.87 %** (26,632 / 26,936 funds) — driven by
+  `scripts/investoday_profile_sync.py` reading the Investoday
+  `/fund/all` catalog. ~40 s for the full universe.
+- **Backfill reliability** — SQLite store now uses
+  `journal_mode=WAL` + `busy_timeout=30 s` (commit `0bfe4ac`), and
+  `backfill.py` catches `OperationalError: database is locked` and
+  retries with exponential backoff (2 s, 4 s, 8 s + jitter, 3
+  attempts) before propagating (commit `4b0de13`).
+- **akShare bulk sync** — `scripts/akshare_capability_backfill.py`
+  walks the 27 k-fund universe against the AkShare provider for the
+  6 akShare-only capabilities (stock / bond / industry / fee /
+  dividend / split holdings). It can write into a fresh SQLite at
+  `--separate-db PATH` and `ATTACH` + `INSERT OR REPLACE` the rows
+  into the main DB at the end, so it never holds the production
+  write lock during the long sync.
+- **MCP stdio server** — `scripts/fund_mcp.py` is a dependency-free
+  JSON-RPC 2.0 server over stdio. It exposes 17 tools wrapping the
+  Python API (`fund_search`, `fund_list`, `fund_nav_history`,
+  `fund_snapshot`, `fund_profile`, `fund_stock_holdings`,
+  `fund_bond_holdings`, `fund_industry_allocations`,
+  `fund_fee_structures`, `fund_dividends`, `fund_splits`,
+  `fund_managers`, `fund_sync`, `fund_batch_sync`, `fund_coverage`,
+  `fund_coverage_report`, `fund_export`). 3 unit tests cover the
+  protocol flow.
+- **CLI access** — `--provider tushare` now works from
+  `fund_cli.py`, matching the provider chain already supported by
+  `backfill.py` and `retry_failures.py`. `fund-cli cloud build-bundle
+  / pull / status` adds OSS-hosted query-bundle support (SHA-256
+  verified, default cache for MCP/CLI when `FUND_DATA_DB` is unset).
+- **Test count: 95 → 120.** The new test files cover the Investoday
+  provider, akShare `--separate-db` flow, and the backfill
+  `database is locked` retry path.
 
 ### Added
 
@@ -41,6 +79,12 @@ chronological order — see `git log` for the per-commit detail.
   `tools/list`, and `tools/call`. It wraps the existing Python API
   as tools such as `fund_search`, `fund_nav_history`, `fund_sync`,
   `fund_coverage_report`, and `fund_export`.
+- **Cloud data bundles** — `fund-cli cloud build-bundle`, `cloud pull`,
+  and `cloud status` support OSS/static-hosted query databases. Bundles
+  exclude `raw_responses` and sync audit tables, verify downloads with
+  SHA-256, and let MCP/CLI default to the pulled cache when
+  `FUND_DATA_DB` is unset. The MCP server also exposes
+  `fund_cloud_status`.
 
 ### Changed
 
@@ -78,6 +122,10 @@ chronological order — see `git log` for the per-commit detail.
 - `scripts/install_skill.py install --copy` now excludes generated data,
   logs, caches, and SQLite files, and removes stale copies of those
   artifacts from an existing skill install.
+- `scripts/install_skill.py install --include-data` now creates a
+  portable copy that includes a consistent `data/fund_data.sqlite`
+  snapshot. The default remains lightweight (`--data-mode none`), and
+  logs, backfill state, WAL/SHM sidecars, and caches stay excluded.
 
 ## 0.1.0 (2026-06-01)
 

@@ -114,6 +114,63 @@ discovery directory for each platform. See
 [`fund-data/SKILLS.md`](fund-data/SKILLS.md) for the layout,
 refresh flow, and platform-specific quirks.
 
+By default copied installs are lightweight and exclude
+`data/fund_data.sqlite`. To make a portable install that includes the
+current local SQLite data snapshot, opt in explicitly:
+
+```bash
+python3 fund-data/scripts/install_skill.py install --target codex --include-data
+# equivalent:
+python3 fund-data/scripts/install_skill.py install --target codex --copy --data-mode copy
+```
+
+`--include-data` copies only a consistent `data/fund_data.sqlite`
+snapshot; logs, backfill state, WAL/SHM sidecars, and caches are still
+excluded.
+
+## Cloud data bundle for OSS
+
+For OpenClaw and other agents, the recommended setup is a lightweight
+skill install plus a query-only data bundle hosted on OSS or any HTTPS
+static file server. The bundle excludes `raw_responses`, sync logs, and
+failure queues so it is much smaller than the full local database.
+
+Build a release locally:
+
+```bash
+VERSION=$(date +%F)
+python3 fund-data/scripts/fund_cli.py cloud build-bundle \
+  --source-db fund-data/data/fund_data.sqlite \
+  --output-dir dist/fund-data/releases/$VERSION \
+  --base-url https://YOUR_BUCKET.oss-cn-hangzhou.aliyuncs.com/fund-data/releases/$VERSION/ \
+  --version $VERSION \
+  --manifest-output dist/fund-data/current/manifest.json
+```
+
+Upload release files first, then publish the manifest last:
+
+```bash
+ossutil cp dist/fund-data/releases/$VERSION/fund_data_query.sqlite.gz \
+  oss://YOUR_BUCKET/fund-data/releases/$VERSION/
+ossutil cp dist/fund-data/releases/$VERSION/fund_data_query.sqlite.gz.sha256 \
+  oss://YOUR_BUCKET/fund-data/releases/$VERSION/
+ossutil cp dist/fund-data/current/manifest.json \
+  oss://YOUR_BUCKET/fund-data/current/manifest.json
+```
+
+Install or refresh the local cache from OSS:
+
+```bash
+python3 fund-data/scripts/fund_cli.py cloud pull \
+  --manifest-url https://YOUR_BUCKET.oss-cn-hangzhou.aliyuncs.com/fund-data/current/manifest.json
+python3 fund-data/scripts/fund_cli.py cloud status
+```
+
+After `cloud pull`, `fund_data` and `fund-mcp` automatically prefer the
+cached query database when `FUND_DATA_DB` is not set. Use
+`FUND_DATA_CACHE_DIR` to move the cache, or `FUND_DATA_DB` to override
+the database path explicitly.
+
 ## Tests
 
 ```bash

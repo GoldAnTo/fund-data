@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import sqlite3
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -55,22 +56,31 @@ def _validate_source() -> None:
         )
 
 
-def _install_one(target: str, dest: Path, *, copy: bool) -> str:
+def _install_one(target: str, dest: Path, *, copy: bool, data_mode: str) -> str:
     if not dest.parent.exists():
         return f"  [{target}] SKIP — {dest.parent} does not exist (agent not installed?)"
 
     # Already pointing here: nothing to do.
-    if dest.is_symlink() and dest.resolve() == SKILL_DIR_FOR_TARGETS.resolve():
+    if not copy and dest.is_symlink() and dest.resolve() == SKILL_DIR_FOR_TARGETS.resolve():
         return f"  [{target}] OK   — already linked to {SKILL_DIR_FOR_TARGETS}"
 
     # Real directory or broken symlink at the destination: be safe.
     if dest.exists() or dest.is_symlink():
+        if copy and dest.is_symlink():
+            dest.unlink()
+            _copy_into(SKILL_DIR_FOR_TARGETS, dest, data_mode=data_mode)
+            return (
+                f"  [{target}] OK   — replaced symlink with copy "
+                f"{SKILL_DIR_FOR_TARGETS} -> {dest} (data={data_mode})"
+            )
         if copy:
             # Merge contents (overwrite files, recurse into directories, keep
             # the dest directory itself so any agent-side state survives).
             for child in SKILL_DIR_FOR_TARGETS.iterdir():
-                _copy_into(child, dest / child.name)
-            return f"  [{target}] OK   — merged {SKILL_DIR_FOR_TARGETS} -> {dest}"
+                _copy_into(child, dest / child.name, data_mode=data_mode)
+            return (
+                f"  [{target}] OK   — merged {SKILL_DIR_FOR_TARGETS} -> {dest} (data={data_mode})"
+            )
         return (
             f"  [{target}] EXISTS — {dest} already exists. "
             f"Use --copy to refresh its contents, or remove it and rerun."
@@ -79,16 +89,18 @@ def _install_one(target: str, dest: Path, *, copy: bool) -> str:
     # Fresh install.
     dest.parent.mkdir(parents=True, exist_ok=True)
     if copy:
-        shutil.copytree(SKILL_DIR_FOR_TARGETS, dest)
-        return f"  [{target}] OK   — copied {SKILL_DIR_FOR_TARGETS} -> {dest}"
+        _copy_into(SKILL_DIR_FOR_TARGETS, dest, data_mode=data_mode)
+        return f"  [{target}] OK   — copied {SKILL_DIR_FOR_TARGETS} -> {dest} (data={data_mode})"
     os.symlink(SKILL_DIR_FOR_TARGETS, dest)
     return f"  [{target}] OK   — symlinked {SKILL_DIR_FOR_TARGETS} -> {dest}"
 
 
-def _copy_into(src: Path, dst: Path) -> None:
+def _copy_into(src: Path, dst: Path, *, data_mode: str = "none") -> None:
     """Copy ``src`` to ``dst``, recursing into directories and overwriting
     files. Preserves any extra files in ``dst`` that are not in ``src``."""
-    if _should_skip_install_path(src):
+    if data_mode not in {"none", "copy"}:
+        raise ValueError(f"unknown data_mode: {data_mode}")
+    if _should_skip_install_path(src, data_mode=data_mode):
         if dst.is_symlink() or dst.is_file():
             dst.unlink()
         elif dst.is_dir():
@@ -99,9 +111,9 @@ def _copy_into(src: Path, dst: Path) -> None:
     if src.is_dir():
         dst.mkdir(parents=True, exist_ok=True)
         for child in src.iterdir():
-            _copy_into(child, dst / child.name)
+            _copy_into(child, dst / child.name, data_mode=data_mode)
         for child in list(dst.iterdir()):
-            if _should_skip_install_path(child):
+            if _should_skip_install_path(child, data_mode=data_mode):
                 if child.is_dir():
                     shutil.rmtree(child)
                 else:
@@ -109,11 +121,29 @@ def _copy_into(src: Path, dst: Path) -> None:
     else:
         if dst.is_dir():
             shutil.rmtree(dst)
+        if src.name == "fund_data.sqlite" and data_mode == "copy":
+            _copy_sqlite_database(src, dst)
+            return
         shutil.copy2(src, dst)
 
 
-def _should_skip_install_path(path: Path) -> bool:
+def _copy_sqlite_database(src: Path, dst: Path) -> None:
+    """Write a consistent SQLite snapshot, including any live WAL pages."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_symlink() or dst.is_file():
+        dst.unlink()
+    source_uri = f"file:{src}?mode=ro"
+    with (
+        sqlite3.connect(source_uri, uri=True, timeout=30.0) as source,
+        sqlite3.connect(dst, timeout=30.0) as target,
+    ):
+        source.backup(target)
+
+
+def _should_skip_install_path(path: Path, *, data_mode: str) -> bool:
     """Return true for local runtime artifacts that do not belong in a skill install."""
+    if data_mode not in {"none", "copy"}:
+        raise ValueError(f"unknown data_mode: {data_mode}")
     artifact_names = {
         ".DS_Store",
         ".ruff_cache",
@@ -131,7 +161,7 @@ def _should_skip_install_path(path: Path) -> bool:
     return (
         name.endswith(".pyc")
         or name.endswith(".pyo")
-        or name.endswith(".sqlite")
+        or (name.endswith(".sqlite") and not (data_mode == "copy" and name == "fund_data.sqlite"))
         or name.endswith(".sqlite-journal")
         or name.endswith(".sqlite-wal")
         or name.endswith(".sqlite-shm")
@@ -187,6 +217,20 @@ def main(argv: list[str] | None = None) -> int:
         help="Copy files instead of symlinking. Use this if your agent does not follow symlinks.",
     )
     parser.add_argument(
+        "--data-mode",
+        choices=["none", "copy"],
+        default="none",
+        help=(
+            "Data handling for copy installs: none excludes SQLite data (default); "
+            "copy includes a consistent data/fund_data.sqlite snapshot."
+        ),
+    )
+    parser.add_argument(
+        "--include-data",
+        action="store_true",
+        help="Shorthand for --copy --data-mode copy.",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="When uninstalling, allow removing a real directory.",
@@ -194,13 +238,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     _validate_source()
+    if args.include_data:
+        args.copy = True
+        args.data_mode = "copy"
+    if args.data_mode == "copy":
+        args.copy = True
 
     paths = _resolve_targets(args.target)
     print(f"fund-data {args.action} -> {args.target}")
     print(f"  source: {SKILL_DIR_FOR_TARGETS}")
     for name, dest in paths:
         if args.action == "install":
-            print(_install_one(name, dest, copy=args.copy))
+            print(_install_one(name, dest, copy=args.copy, data_mode=args.data_mode))
         elif args.action == "uninstall":
             line = _uninstall_one(name, dest)
             if args.force and "REFUSE" in line:

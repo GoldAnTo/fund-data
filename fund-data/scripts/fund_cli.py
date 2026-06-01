@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 try:
-    from . import fund_data
+    from . import fund_cloud, fund_data
 except ImportError:  # pragma: no cover - exercised by direct script execution
+    import fund_cloud
+
     import fund_data
 
 
@@ -243,6 +246,48 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--format", choices=["json", "csv"], default="json")
     export.add_argument("--output")
     _add_common_db_arg(export)
+
+    cloud = subparsers.add_parser("cloud", help="Build, pull, and inspect cloud data bundles")
+    cloud_subparsers = cloud.add_subparsers(dest="cloud_command", required=True)
+
+    build_bundle = cloud_subparsers.add_parser(
+        "build-bundle",
+        help="Build a compressed query-only SQLite bundle for OSS/static hosting",
+    )
+    build_bundle.add_argument(
+        "--source-db",
+        default=str(fund_data.DEFAULT_DB_PATH),
+        help="Full local SQLite database to package.",
+    )
+    build_bundle.add_argument(
+        "--output-dir",
+        required=True,
+        help="Release directory for fund_data_query.sqlite.gz and manifest.json.",
+    )
+    build_bundle.add_argument(
+        "--base-url",
+        required=True,
+        help="Public HTTPS URL prefix for this release directory.",
+    )
+    build_bundle.add_argument("--version", help="Bundle version, such as 2026-06-01.")
+    build_bundle.add_argument(
+        "--manifest-output",
+        help="Optional path for the published current/manifest.json file.",
+    )
+
+    pull = cloud_subparsers.add_parser("pull", help="Download and install a cloud query bundle")
+    pull.add_argument(
+        "--manifest-url",
+        default=os.environ.get("FUND_DATA_MANIFEST_URL"),
+        help="HTTPS/file URL for manifest.json. Defaults to FUND_DATA_MANIFEST_URL.",
+    )
+    pull.add_argument("--cache-dir", help="Local cache directory. Defaults to ~/.cache/fund-data.")
+
+    status = cloud_subparsers.add_parser("status", help="Show local cloud cache status")
+    status.add_argument(
+        "--cache-dir", help="Local cache directory. Defaults to ~/.cache/fund-data."
+    )
+    status.add_argument("--manifest-url", help="Optional remote manifest URL to compare against.")
 
     return parser
 
@@ -482,6 +527,36 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 _print_json(summary)
             return 0
+
+        if args.command == "cloud":
+            if args.cloud_command == "build-bundle":
+                result = fund_cloud.build_bundle(
+                    source_db=args.source_db,
+                    output_dir=args.output_dir,
+                    base_url=args.base_url,
+                    version=args.version,
+                    manifest_output=args.manifest_output,
+                )
+                _print_json(fund_cloud.json_ready(result))
+                return 0
+            if args.cloud_command == "pull":
+                if not args.manifest_url:
+                    raise ValueError("--manifest-url or FUND_DATA_MANIFEST_URL is required")
+                _print_json(
+                    fund_cloud.pull_bundle(
+                        args.manifest_url,
+                        cache_dir=args.cache_dir,
+                    )
+                )
+                return 0
+            if args.cloud_command == "status":
+                _print_json(
+                    fund_cloud.status(
+                        cache_dir=args.cache_dir,
+                        manifest_url=args.manifest_url,
+                    )
+                )
+                return 0
 
     except Exception as exc:
         print(f"fund-data error: {exc}", file=sys.stderr)

@@ -168,6 +168,15 @@ class FundCliTests(unittest.TestCase):
 
         self.assertEqual(parsed.provider, "tushare")
 
+    def test_cloud_status_command_returns_json(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = self.run_cli("cloud", "status", "--cache-dir", str(Path(tmpdir) / "cache"))
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertFalse(payload["installed"])
+            self.assertEqual(payload["cache_dir"], str(Path(tmpdir) / "cache"))
+
     def test_console_script_entrypoint_imports_from_installed_package(self):
         repo_root = SCRIPT_DIR.parents[1]
         with tempfile.TemporaryDirectory() as tmpdir:

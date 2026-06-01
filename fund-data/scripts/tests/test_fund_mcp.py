@@ -41,6 +41,7 @@ class FundMcpProtocolTests(unittest.TestCase):
         self.assertIn("fund_nav_history", tool_names)
         self.assertIn("fund_sync", tool_names)
         self.assertIn("fund_coverage_report", tool_names)
+        self.assertIn("fund_cloud_status", tool_names)
 
     def test_call_fund_search_returns_text_and_structured_content(self):
         rows = [{"fund_code": "006600", "fund_name": "人保沪深300A"}]
@@ -71,6 +72,26 @@ class FundMcpProtocolTests(unittest.TestCase):
         self.assertFalse(result["isError"])
         self.assertEqual(result["structuredContent"]["rows"], rows)
         self.assertEqual(json.loads(result["content"][0]["text"]), rows)
+
+    def test_call_fund_cloud_status_returns_cache_status(self):
+        status = {"installed": False, "cache_dir": "/tmp/fund-data-cache"}
+        with patch.object(fund_mcp.fund_cloud, "status", return_value=status) as mock_status:
+            response = fund_mcp.handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "fund_cloud_status",
+                        "arguments": {"cache_dir": "/tmp/fund-data-cache"},
+                    },
+                }
+            )
+
+        mock_status.assert_called_once_with(cache_dir="/tmp/fund-data-cache", manifest_url=None)
+        result = response["result"]
+        self.assertFalse(result["isError"])
+        self.assertEqual(result["structuredContent"], status)
 
     def test_stdio_entrypoint_reads_newline_delimited_json_rpc(self):
         message = {

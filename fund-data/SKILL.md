@@ -200,6 +200,61 @@ The server exposes `fund_search`, `fund_list`, `fund_nav_history`,
 JSON-RPC 2.0 over stdin/stdout and must not print non-protocol output
 to stdout.
 
+## Installation Data Modes
+
+Use lightweight installs by default:
+
+```bash
+python3 scripts/install_skill.py install --target codex --copy
+```
+
+This excludes `data/fund_data.sqlite`, logs, backfill state, caches,
+and SQLite sidecars. The target can rebuild data or set `FUND_DATA_DB`
+to a shared database path.
+
+For a portable install that carries the current local data snapshot:
+
+```bash
+python3 scripts/install_skill.py install --target codex --include-data
+```
+
+`--include-data` implies `--copy --data-mode copy` and copies only a
+consistent `data/fund_data.sqlite` snapshot using SQLite backup.
+WAL/SHM sidecars, backfill logs, state files, and caches stay excluded.
+
+## Cloud Data Cache
+
+Prefer cloud data bundles for OpenClaw and other agents that should not
+carry a multi-GB local SQLite copy. A bundle is a compressed query-only
+database (`fund_data_query.sqlite.gz`) plus `manifest.json`; it excludes
+`raw_responses`, sync logs, failure queues, and other cold audit data.
+
+Build a release for OSS/static hosting:
+
+```bash
+VERSION=$(date +%F)
+python3 scripts/fund_cli.py cloud build-bundle \
+  --source-db data/fund_data.sqlite \
+  --output-dir ../dist/fund-data/releases/$VERSION \
+  --base-url https://YOUR_BUCKET.oss-cn-hangzhou.aliyuncs.com/fund-data/releases/$VERSION/ \
+  --version $VERSION \
+  --manifest-output ../dist/fund-data/current/manifest.json
+```
+
+Install a released bundle locally:
+
+```bash
+python3 scripts/fund_cli.py cloud pull \
+  --manifest-url https://YOUR_BUCKET.oss-cn-hangzhou.aliyuncs.com/fund-data/current/manifest.json
+python3 scripts/fund_cli.py cloud status
+```
+
+When `FUND_DATA_DB` is unset, `scripts/fund_data.py` automatically
+prefers the pulled cache database under `~/.cache/fund-data/`.
+Set `FUND_DATA_CACHE_DIR` to move that cache, or `FUND_DATA_DB` to force
+a specific SQLite file. MCP clients can call `fund_cloud_status` before
+querying to check installed and remote versions.
+
 ## Source Notes
 
 No-key Eastmoney endpoints used by `scripts/fund_data.py`:

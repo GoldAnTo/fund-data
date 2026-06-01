@@ -29,12 +29,55 @@ python3 scripts/install_skill.py install --target claude
 
 # Copy instead of symlink (some agents follow symlinks, some do not)
 python3 scripts/install_skill.py install --target codex --copy
+
+# Portable copy with the current SQLite data snapshot included
+python3 scripts/install_skill.py install --target codex --include-data
 ```
 
 Copy refreshes include only the skill source files. Generated runtime
-artifacts such as `data/fund_data.sqlite`, `data/backfill_logs/`,
-`data/backfill_state.json`, `__pycache__/`, and `.DS_Store` are
-excluded so a Codex install stays small and deterministic.
+artifacts such as `data/backfill_logs/`, `data/backfill_state.json`,
+`__pycache__/`, and `.DS_Store` are excluded so a Codex install stays
+deterministic.
+
+Data has two explicit modes for copy installs:
+
+| Mode | Command | What happens |
+|---|---|---|
+| Lightweight (default) | `--copy --data-mode none` | Excludes `data/fund_data.sqlite`; the target rebuilds or points `FUND_DATA_DB` elsewhere. |
+| Portable with data | `--include-data` or `--copy --data-mode copy` | Copies a consistent `data/fund_data.sqlite` snapshot using SQLite backup. WAL/SHM sidecars, logs, state, and caches stay excluded. |
+
+## Cloud data cache
+
+For OpenClaw, Codex, Claude, or any MCP-capable agent, prefer a
+lightweight skill install plus a cloud data cache:
+
+```bash
+python3 scripts/fund_cli.py cloud pull \
+  --manifest-url https://YOUR_BUCKET.oss-cn-hangzhou.aliyuncs.com/fund-data/current/manifest.json
+python3 scripts/fund_cli.py cloud status
+```
+
+`cloud pull` downloads `fund_data_query.sqlite.gz`, verifies its
+SHA-256 from `manifest.json`, and installs it under
+`~/.cache/fund-data/releases/<version>/`. When `FUND_DATA_DB` is not
+set, `fund_data` and `fund_mcp.py` automatically prefer that cached
+query database over the bundled `data/fund_data.sqlite`.
+
+To publish a new OSS release:
+
+```bash
+VERSION=$(date +%F)
+python3 scripts/fund_cli.py cloud build-bundle \
+  --source-db data/fund_data.sqlite \
+  --output-dir ../dist/fund-data/releases/$VERSION \
+  --base-url https://YOUR_BUCKET.oss-cn-hangzhou.aliyuncs.com/fund-data/releases/$VERSION/ \
+  --version $VERSION \
+  --manifest-output ../dist/fund-data/current/manifest.json
+```
+
+Upload `fund_data_query.sqlite.gz` and its `.sha256` object first, then
+upload `current/manifest.json` last so clients never observe a
+half-published release.
 
 ## MCP server
 
@@ -59,6 +102,9 @@ Example client config:
 
 If the project has been installed as a Python package, use
 `"command": "fund-mcp"` with no args.
+
+The MCP server includes `fund_cloud_status` so agents can inspect the
+local cache version and compare it with a remote manifest URL.
 
 ## Refresh
 
