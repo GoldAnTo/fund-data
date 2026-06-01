@@ -29,7 +29,11 @@ release workflow).
   funds that historically had no dividend history.
 - **Fees: 18.14 %** — AkShare's page-scraped fee endpoint returns
   empty for the full universe, so the Eastmoney backfill is the
-  only source. Still mostly empty; the cheapest fix is to upgrade
+  only source. The 2ec363b fix to `akshare_capability_backfill.py`
+  switches the per-fund call from the wrong kwarg `indicator=` to
+  the correct `indicators=[...]`, so a re-run after the next
+  release can land the full ~27 k funds. Still mostly empty in
+  this release's headline numbers; the cheapest fix is to upgrade
   the Investoday key to the ¥45 基础包 which unlocks the
   `/fund/fee-structures` L1 endpoint.
 - **Backfill reliability** — SQLite store now uses
