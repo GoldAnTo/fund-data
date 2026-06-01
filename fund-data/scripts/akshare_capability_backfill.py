@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import logging
 import sqlite3
 import sys
