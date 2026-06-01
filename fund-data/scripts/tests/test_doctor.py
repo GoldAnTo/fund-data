@@ -46,7 +46,23 @@ class CheckDbTests(unittest.TestCase):
 
 class CheckAkShareTests(unittest.TestCase):
     def test_venv_missing_reports_error(self):
-        result = doctor._check_akshare(Path("/nonexistent/.venv-akshare"))
+        # The doctor function tries ``import akshare`` against the
+        # current Python first. When that succeeds (because the
+        # host has akshare installed) the function short-circuits
+        # with ok=True and never reaches the venv check, regardless
+        # of the venv path passed in. To exercise the "venv missing"
+        # path we need to make the in-process import fail.
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "akshare" or name.startswith("akshare."):
+                raise ImportError("akshare not importable in this test")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=fake_import):
+            result = doctor._check_akshare(Path("/nonexistent/.venv-akshare"))
         self.assertFalse(result["ok"])
         self.assertIn("not installed", result["message"])
         self.assertIn("install", result["hint"])

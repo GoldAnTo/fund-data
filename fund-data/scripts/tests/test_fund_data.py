@@ -7,6 +7,7 @@ import time
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -476,7 +477,12 @@ class FundDataProviderTests(unittest.TestCase):
                 )
 
         provider = fund_data.AkshareProvider(ak_module=FakeAkshare())
-        rows = provider.fee_structures("510300")
+        # The Eastmoney page scraper hits the network; isolate the
+        # fallback path by stubbing it out. Without this stub the
+        # page scraper pulls live fundf10.eastmoney.com rows and
+        # the test sees multiple "管理费率" entries.
+        with patch.object(provider, "_fee_structures_from_eastmoney_page", return_value=[]):
+            rows = provider.fee_structures("510300")
 
         self.assertGreater(len(rows), 0)
         mgmt_rows = [r for r in rows if r.get("condition_name") == "管理费率"]

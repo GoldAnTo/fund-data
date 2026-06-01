@@ -123,11 +123,11 @@ def _select_targets(
         return [r[0] for r in conn.execute(sql)]
 
 
-# Tables that the per-fund upserts land in. The merge step copies them
-# row-for-row from a separate (temporary) DB into the main DB at the
-# end of the run; matching the per-table unique key makes
-# ``INSERT OR REPLACE`` the right conflict resolution so the freshest
-# data wins.
+# Tables that the per-fund upserts land in. The merge step replaces
+# the *fund* (every row with the same ``fund_code``) rather than
+# individual PK tuples — backfills always want "freshest data wins"
+# for the whole fund, not a partial row-level update that would leave
+# stale report_period rows behind.
 MERGE_TABLES = (
     "stock_holdings",
     "bond_holdings",
@@ -139,8 +139,17 @@ MERGE_TABLES = (
 
 
 def _merge_separate_db(separate_db: Path, main_db: Path) -> dict[str, int]:
-    """Copy every row from ``separate_db`` into ``main_db`` using
-    ``INSERT OR REPLACE``. Returns ``{table_name: rows_copied}``.
+    """Replace every fund touched by ``separate_db`` into ``main_db``,
+    fund-by-fund, so the freshest per-fund data wins. Returns
+    ``{table_name: rows_copied}``.
+
+    For each table in :data:`MERGE_TABLES`:
+
+    1. Find the distinct ``fund_code`` values present in ``sep.{table}``.
+    2. ``DELETE FROM main.{table} WHERE fund_code IN (...)`` — wipes
+       every stale row for those funds in the main DB.
+    3. ``INSERT INTO main.{table} SELECT * FROM sep.{table}`` —
+       copies the fresh rows in.
 
     The caller is responsible for ensuring ``separate_db`` already
     has the target schema (run :func:`FundDataStore.ensure_schema`
@@ -158,11 +167,22 @@ def _merge_separate_db(separate_db: Path, main_db: Path) -> dict[str, int]:
         try:
             main_conn.execute("BEGIN")
             for table in MERGE_TABLES:
-                # The ``sep.`` qualifier is required because both DBs
-                # declare the table; ``OR REPLACE`` is the conflict
-                # resolution for the per-table unique key.
+                # 1) Find which fund_codes the separate DB has for this table.
+                sep_rows = main_conn.execute(
+                    f"SELECT DISTINCT fund_code FROM sep.{table}"
+                ).fetchall()
+                sep_codes = [r[0] for r in sep_rows]
+                # 2) Wipe those funds from main so stale report_period
+                #    rows don't linger behind the fresh ones.
+                if sep_codes:
+                    placeholders = ",".join("?" * len(sep_codes))
+                    main_conn.execute(
+                        f"DELETE FROM main.{table} WHERE fund_code IN ({placeholders})",
+                        sep_codes,
+                    )
+                # 3) Copy fresh rows from sep into main.
                 cur = main_conn.execute(
-                    f"INSERT OR REPLACE INTO main.{table} SELECT * FROM sep.{table}"
+                    f"INSERT INTO main.{table} SELECT * FROM sep.{table}"
                 )
                 counts[table] = cur.rowcount
             main_conn.execute("COMMIT")
