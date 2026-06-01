@@ -1,0 +1,71 @@
+name: Bug report
+description: Report something that is broken or unexpected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. The more specific you are about the
+        command, the env, and the output, the faster we can repro
+        and fix it.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A short description of the bug. One sentence is fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        The exact commands (and watchlist contents / fund codes if
+        relevant) that produce the failure.
+      placeholder: |
+        1. python3 fund-data/scripts/fund_cli.py …
+        2. see error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What you expected to happen instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: |
+        The actual output — paste the full error / traceback if
+        there is one. Use a code block to keep formatting.
+    validations:
+      required: true
+
+  - type: input
+    id: doctor
+    attributes:
+      label: `doctor.py` output
+      description: |
+        Run `python3 fund-data/scripts/doctor.py` and paste the output
+        (or attach it as a `.txt` file). This gives us the Python
+        version, DB schema, provider status, and queue sizes.
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: |
+        Output of `git -C fund-data log -1 --format='%H %s'` or the
+        installed PyPI / skill version (e.g. v0.1.0).
+    validations:
+      required: false

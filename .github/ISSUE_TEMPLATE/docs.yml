@@ -1,0 +1,40 @@
+name: Documentation / example
+description: Suggest an edit to README, SKILL.md, PROVIDERS.md, or examples/
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for documentation-only PRs (typos, clarity, missing
+        examples). For command / provider changes, use the Feature
+        request template instead.
+
+  - type: textarea
+    id: location
+    attributes:
+      label: File(s) and section(s) affected
+      description: |
+        List the files (and, if known, the section) you want to
+        change. e.g. `fund-data/SKILL.md › Quick Start`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: change
+    attributes:
+      label: Proposed change
+      description: |
+        Paste the proposed new text, or describe the rewrite. Keep
+        the diff small — doc PRs are easier to land.
+    validations:
+      required: true
+
+  - type: input
+    id: rationale
+    attributes:
+      label: Why this is an improvement
+      description: |
+        One sentence. "Clarifies the `--min-interval-seconds` flag"
+        is enough.
+    validations:
+      required: false

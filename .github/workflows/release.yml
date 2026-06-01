@@ -1,0 +1,74 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.2.0). Defaults to the latest pushed tag."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: "GitHub release"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            # workflow triggered by tag push — GITHUB_REF_NAME is the tag
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Resolved tag: ${{ steps.tag.outputs.tag }}"
+
+      - name: Read CHANGELOG section for this version
+        id: changelog
+        run: |
+          python3 - <<'PY' > "$GITHUB_OUTPUT"
+          import re
+          from pathlib import Path
+          tag = "${{ steps.tag.outputs.tag }}"
+          version = tag.lstrip("v")
+          text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          # Match "## <version> (date)" or "## <version>". The released
+          # section is the one that follows the most recent header
+          # whose name is exactly `version` (case-insensitive).
+          pattern = re.compile(
+              r"^##\s+(\[?" + re.escape(version) + r"\]?[^#\n]*)\n(.*?)(?=^##\s+|\Z)",
+              re.MULTILINE | re.DOTALL,
+          )
+          m = pattern.search(text)
+          if not m:
+              print(f"body=<!-- no CHANGELOG entry for {version} -->")
+          else:
+              body = m.group(2).strip()
+              # GitHub step outputs can't contain literal newlines — encode.
+              import json
+              print("body=" + json.dumps(body))
+          PY
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          body: ${{ steps.changelog.outputs.body }}
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,28 +1,43 @@
 # Fund Data
 
-A local Chinese public fund data base. Wraps a few no-key Eastmoney
-endpoints, an optional AkShare fallback, and a structured Investoday
-adapter behind one Python skill so agents (or a developer) can search,
-fetch, persist, and export fund data without re-deriving the parsing
-logic every time.
+[![CI](https://github.com/GoldAnTo/fund-data/actions/workflows/test.yml/badge.svg)](https://github.com/GoldAnTo/fund-data/actions/workflows/test.yml)
+[![Lint](https://github.com/GoldAnTo/fund-data/actions/workflows/lint.yml/badge.svg)](https://github.com/GoldAnTo/fund-data/actions/workflows/lint.yml)
+[![Nightly Sync](https://github.com/GoldAnTo/fund-data/actions/workflows/sync.yml/badge.svg)](https://github.com/GoldAnTo/fund-data/actions/workflows/sync.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](CHANGELOG.md)
+[![Last Commit](https://img.shields.io/github/last-commit/GoldAnTo/fund-data)](https://github.com/GoldAnTo/fund-data/commits/main)
 
-> Codex skill home: `fund-data/SKILL.md`.
-> Design spec: `docs/superpowers/specs/2026-06-01-fund-data-skill-design.md`.
-> Implementation plan: `docs/superpowers/plans/2026-06-01-fund-data-skill.md`.
+A local Chinese public fund data base. Wraps the no-key Eastmoney
+endpoints, an optional AkShare fallback, a Tushare adapter, and a
+structured Investoday (paid) adapter behind one Python skill so
+agents (or a developer) can search, fetch, persist, and export fund
+data without re-deriving the parsing logic every time.
 
-## Status
+> Codex / Claude / OpenClaw skill home: [`fund-data/SKILL.md`](fund-data/SKILL.md).
+> Design spec: [`docs/superpowers/specs/2026-06-01-fund-data-skill-design.md`](docs/superpowers/specs/2026-06-01-fund-data-skill-design.md).
+> Implementation plan: [`docs/superpowers/plans/2026-06-01-fund-data-skill.md`](docs/superpowers/plans/2026-06-01-fund-data-skill.md).
+> Provider onboarding: [`fund-data/PROVIDERS.md`](fund-data/PROVIDERS.md).
+
+## Status (v0.1.0)
 
 | | |
 |---|---|
-| Core library | `fund-data/scripts/fund_data.py` (≈2.8k lines) |
+| Core library | `fund-data/scripts/fund_data.py` (≈3.0k lines) |
 | CLI | `fund-data/scripts/fund_cli.py` |
-| Tests | 39 unit tests, all green (`python3 -m unittest discover fund-data`) |
+| Tests | **75 unit tests**, all green |
 | Default DB | `fund-data/data/fund_data.sqlite` (gitignored; rebuild on first run) |
-| Providers | Eastmoney (no key) → AkShare (optional) → Investoday (key) |
+| Providers | Eastmoney (no key) → AkShare (optional) → Tushare (`TUSHARE_TOKEN`) → Investoday (`INVESTDATA_API_KEY`) |
+| Fund universe | 26,936 funds on first seed |
+| Snapshot coverage | 4,556 / 26,936 = **16.93 %** (Eastmoney backfill in progress) |
+| NAV coverage | 4,529 unique funds / 26,936 = **16.81 %** |
+| Profile coverage | 724 / 26,936 = **2.69 %** (Tushare/Investoday only) |
+| CI | test.yml (3.11 / 3.12 / 3.13) + lint.yml (ruff / black) + sync.yml (nightly 02:00 UTC) |
+| License | MIT |
+| Versioning | [Semantic Versioning 2.0](https://semver.org/) (0.x is allowed to break in minor) |
 
-The skill is feature-complete against the v1 spec. The data base is
-intentionally empty on first clone — populate it with the CLI commands
-below. See "Known gaps" for the work that is still in flight.
+Run `python3 fund-data/scripts/coverage_report.py` at any time to
+regenerate the coverage table from your local DB.
 
 ## Quick start
 
@@ -46,8 +61,9 @@ python3 fund-data/scripts/fund_cli.py snapshot 110022
     --codes-file fund-data/data/fund_codes_sample.txt \
     --include-all --report-year 2024
 
-# 5. Inspect coverage and export.
+# 5. Inspect coverage, run doctor, and export.
 python3 fund-data/scripts/fund_cli.py coverage --fund-code 110022
+python3 fund-data/scripts/doctor.py
 python3 fund-data/scripts/fund_cli.py export funds --format csv --output /tmp/funds.csv
 ```
 
@@ -71,52 +87,84 @@ refresh flow, and platform-specific quirks.
 
 ```bash
 cd fund-data
-python3 -m unittest discover scripts
+python3 -m unittest discover scripts/tests
 ```
 
-The test suite uses static Eastmoney/AkShare fixtures — no network
-required.
+The test suite uses static Eastmoney / AkShare / Investoday / Tushare
+fixtures — no network required. The same command runs in CI on Python
+3.11, 3.12, and 3.13.
 
 ## Project layout
 
 ```
 .
+├── .editorconfig
+├── .gitattributes
+├── .github/
+│   ├── CODEOWNERS
+│   ├── ISSUE_TEMPLATE/
+│   ├── workflows/
+│   │   ├── test.yml         # CI: unit tests on 3.11 / 3.12 / 3.13
+│   │   ├── lint.yml         # CI: ruff + black
+│   │   ├── sync.yml         # nightly resumable backfill (02:00 UTC)
+│   │   └── release.yml      # GitHub release on tag push
+│   ├── dependabot.yml
+│   └── PULL_REQUEST_TEMPLATE.md
 ├── .gitignore
-├── README.md                  # you are here
-├── requirements.txt
+├── .pre-commit-config.yaml
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── CODE_OF_CONDUCT.md
+├── LICENSE                  # MIT
+├── README.md                # you are here
+├── SECURITY.md
 ├── docs/
 │   └── superpowers/
-│       ├── specs/             # design documents
-│       └── plans/             # implementation plans
-└── fund-data/                 # the Codex skill
-    ├── SKILL.md               # agent entrypoint
+│       ├── specs/           # design documents
+│       └── plans/           # implementation plans
+├── examples/                # runnable demo scripts
+├── pyproject.toml           # package metadata + ruff config
+├── requirements.txt
+└── fund-data/               # the Codex / Claude / OpenClaw skill
+    ├── SKILL.md             # agent entrypoint
+    ├── SKILLS.md            # per-platform install layout
+    ├── PROVIDERS.md         # provider onboarding
+    ├── AGENTS.md            # performance / backfill notes
     ├── agents/openai.yaml
-    ├── references/schema.md   # SQLite schema reference
+    ├── references/schema.md # SQLite schema reference
     ├── scripts/
-    │   ├── fund_data.py       # parsers, providers, store, sync helpers
-    │   ├── fund_cli.py        # CLI wrapper
-    │   └── tests/             # unittest suite
-    └── data/                  # SQLite DB + watchlist files (gitignored)
+    │   ├── __init__.py
+    │   ├── fund_data.py     # parsers, providers, store, sync helpers
+    │   ├── fund_cli.py      # CLI wrapper
+    │   ├── backfill.py      # resumable end-to-end backfill
+    │   ├── doctor.py        # environment health check
+    │   ├── retry_failures.py
+    │   ├── coverage_report.py
+    │   ├── install_skill.py
+    │   └── tests/           # 75 unittest cases
+    └── data/                # SQLite DB + watchlist files (gitignored)
 ```
 
-## Known gaps
+## Known gaps (tracked for 0.2.0)
 
 These are the items the team is actively working through. They are
 listed in priority order, not all of them are blockers.
 
-1. **fund_profiles coverage is 0.03%.** Only the 8 sample funds have a
-   full profile, NAV history, and holdings. A backfill script for the
-   rest of the 26,936 funds is the next task.
-2. **38 stale entries in `sync_failures`.** All share the same root
-   cause: auto mode silently dropped `akshare` from the chain when it
-   was not installed. Fixed in commit history; rerun `batch-sync` on
-   the failed codes after pulling the latest code.
-3. **No CI.** Tests run locally only. Adding a GitHub Actions workflow
-   that runs the unittest suite on push is on the roadmap.
-4. **No scheduled sync.** No cron / launchd entry yet — fund data is
-   only as fresh as the last manual run.
-5. **Splits table is sparse.** Most funds have not split; a small
-   audit is needed to confirm the empty rows are correct, not missing.
+1. **Profile / holdings / fees coverage sits at 1.8 – 2.7 %.** Eastmoney
+   does not implement those capabilities. The Tushare / Investoday
+   pass covers them in a follow-up run — see `fund-data/AGENTS.md`
+   for the recommended two-pass workflow.
+2. **146 rows in `sync_failures`** at the time of writing. Most are
+   benign (currency funds with no holdings, ETF profile endpoints
+   that Eastmoney never implemented). Drain with
+   `python3 fund-data/scripts/retry_failures.py --provider eastmoney --limit 200`
+   after the nightly backfill settles.
+3. **No `--verbose` / JSON log flag on `fund_cli.py`.** Lines are
+   pretty-printed for humans. An agent-friendly `--json` flag is
+   queued for 0.2.0.
+4. **No MCP server wrapper.** Codex / Claude / OpenClaw currently
+   consume the skill via `bash`. An MCP server that exposes the
+   same commands over the protocol is queued for 0.2.0.
 
 ## Safety
 
@@ -126,3 +174,12 @@ listed in priority order, not all of them are blockers.
   quoting numbers.
 - The CLI defaults to one request per second; do not lower the
   interval or you will be rate-limited by the public endpoints.
+- See [`SECURITY.md`](SECURITY.md) for how to report a vulnerability
+  in this project.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the developer setup
+(venv, pre-commit, lint rules, test command, PR template).
+The project follows a code of conduct — see
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
