@@ -1,0 +1,13 @@
+# CODEOWNERS
+# Each line is a file pattern followed by one or more owners.
+# Order matters: later rules override earlier ones.
+
+# Default owner for the whole repo
+*       @GoldAnTo
+
+# Provider / schema changes need an extra pair of eyes before merging.
+fund-data/scripts/fund_data.py   @GoldAnTo
+fund-data/references/schema.md    @GoldAnTo
+fund-data/SKILL.md                @GoldAnTo
+fund-data/PROVIDERS.md            @GoldAnTo
+.github/workflows/                @GoldAnTo

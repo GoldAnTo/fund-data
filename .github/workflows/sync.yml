@@ -1,0 +1,109 @@
+name: nightly-sync
+
+on:
+  # 02:00 UTC == 10:00 Asia/Shanghai. Daily snapshot+NAV refresh.
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Provider chain to use (auto, eastmoney, akshare, tushare, investoday)"
+        required: false
+        default: "eastmoney"
+        type: choice
+        options:
+          - auto
+          - eastmoney
+          - akshare
+          - tushare
+          - investoday
+      concurrency:
+        description: "Concurrent fund fetches (4-16, default 8)"
+        required: false
+        default: "8"
+        type: choice
+        options:
+          - "4"
+          - "8"
+          - "12"
+          - "16"
+      max_funds:
+        description: "Cap for the run (empty = full universe)"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  # Prevent overlapping manual reruns while a scheduled run is still in flight.
+  group: fund-data-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    name: "Resumable backfill (${{ inputs.provider || 'eastmoney' }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    env:
+      FUND_DATA_DB: fund-data/data/fund_data.sqlite
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install AkShare into a venv
+        run: |
+          python -m venv /tmp/venv-akshare
+          /tmp/venv-akshare/bin/pip install --upgrade pip
+          /tmp/venv-akshare/bin/pip install -r requirements.txt
+
+      - name: Run resumable backfill
+        working-directory: fund-data
+        run: |
+          set -e
+          ARGS=(--provider "${{ inputs.provider || 'eastmoney' }}"
+                --concurrency ${{ inputs.concurrency || '8' }}
+                --batch-size 100
+                --nav-years 2
+                --exclude-type 货币
+                --log-level INFO)
+          if [ -n "${{ inputs.max_funds }}" ]; then
+            ARGS+=(--max-funds "${{ inputs.max_funds }}")
+          fi
+          /tmp/venv-akshare/bin/python scripts/backfill.py "${ARGS[@]}" \
+            2>&1 | tee data/backfill_logs/scheduled.log
+
+      - name: Doctor after backfill
+        if: always()
+        working-directory: fund-data
+        run: |
+          /tmp/venv-akshare/bin/python scripts/doctor.py --skip-network \
+            > data/doctor-post.log 2>&1 || true
+          cat data/doctor-post.log
+
+      - name: Upload backfill summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-summary-${{ github.run_id }}
+          path: |
+            fund-data/data/backfill_summary.json
+            fund-data/data/backfill_state.json
+
+      - name: Upload backfill log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-log-${{ github.run_id }}
+          path: fund-data/data/backfill_logs/
+
+      - name: Notify on persistent failures
+        if: failure()
+        run: |
+          echo "::error::Nightly fund-data backfill failed. See logs in the artifacts."
+          echo "::group::Last 40 lines of scheduled.log"
+          tail -40 fund-data/data/backfill_logs/scheduled.log || true
+          echo "::endgroup::"
