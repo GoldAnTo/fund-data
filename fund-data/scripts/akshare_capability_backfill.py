@@ -153,7 +153,7 @@ def _merge_separate_db(separate_db: Path, main_db: Path) -> dict[str, int]:
     with sqlite3.connect(main_db, timeout=30) as main_conn:
         # ATTACH is a connection-level setting. We must issue it on
         # the *target* connection so the rows land in main.
-        main_conn.execute(f"ATTACH DATABASE ? AS sep", (str(separate_db),))
+        main_conn.execute("ATTACH DATABASE ? AS sep", (str(separate_db),))
         try:
             main_conn.execute("BEGIN")
             for table in MERGE_TABLES:
@@ -294,7 +294,19 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     provider = fund_data.AkshareProvider()
-    store = fund_data.FundDataStore(db_path)
+    # In --separate-db mode, we run every upsert against the temp DB
+    # and merge at the end. The schema mirrors the main DB so the
+    # merge is a row-for-row INSERT OR REPLACE.
+    if args.separate_db:
+        separate_path = Path(args.separate_db)
+        if separate_path.exists():
+            logger.info("removing pre-existing %s", separate_path)
+            separate_path.unlink()
+        fund_data.FundDataStore(str(separate_path)).ensure_schema()
+        store = fund_data.FundDataStore(str(separate_path))
+        logger.info("writing to separate DB at %s; will merge at the end", separate_path)
+    else:
+        store = fund_data.FundDataStore(db_path)
     aggregate = SyncStats()
     t0 = time.time()
 
@@ -343,6 +355,15 @@ def main(argv: list[str] | None = None) -> int:
         n = aggregate.capability_failures.get(cap, 0)
         if n:
             logger.info("  capability %s failed for %d funds", cap, n)
+
+    if args.separate_db:
+        separate_path = Path(args.separate_db)
+        logger.info("merging %s into %s (INSERT OR REPLACE)", separate_path, db_path)
+        counts = _merge_separate_db(separate_path, db_path)
+        for table, n in counts.items():
+            logger.info("  merged %d rows into %s", n, table)
+        with contextlib.suppress(OSError):
+            separate_path.unlink()
     return 0
 
 
