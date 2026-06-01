@@ -146,8 +146,38 @@ jobs:
 
       - name: Notify on persistent failures
         if: failure()
-        run: |
-          echo "::error::Nightly fund-data backfill failed. See logs in the artifacts."
-          echo "::group::Last 40 lines of scheduled.log"
-          tail -40 fund-data/data/backfill_logs/scheduled.log || true
-          echo "::endgroup::"
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const title = `🔴 nightly-sync failed at ${new Date().toISOString()}`;
+            const body = [
+              `**Workflow run**: ${runUrl}`,
+              ``,
+              `Nightly fund-data backfill/sync failed.`,
+              ``,
+              `- Check the workflow log (artifacts attached below).`,
+              `- Inspect the \`sync_failures\` and \`dataset_errors\` tables in the data DB for stale or new failures.`,
+              `- The doctor step also runs after the backfill; if it reported any check as \`ok: false\`, fix that first.`,
+              ``,
+              `<sub>Auto-opened by the nightly-sync workflow's P0.5 failure-notify step.</sub>`,
+            ].join("\n");
+
+            // Avoid piling up duplicate open issues for the same run.
+            const stamp = context.runId;
+            const labels = ["nightly-sync", "automated"];
+            const existing = await github.rest.issues.listForRepo({
+              owner, repo, state: "open", labels: labels.join(","), per_page: 5,
+            });
+            const dup = existing.data.find(i => i.title.includes(String(stamp)));
+            if (dup) {
+              core.info(`issue #${dup.number} already open for run ${stamp}; skipping`);
+            } else {
+              const issue = await github.rest.issues.create({
+                owner, repo, title: `${title} (run ${stamp})`, body, labels,
+              });
+              core.info(`opened issue #${issue.number} for run ${stamp}`);
+            }
