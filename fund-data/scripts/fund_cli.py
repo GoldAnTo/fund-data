@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -26,6 +27,28 @@ def _read_offline_raw(path: str | None) -> str | None:
 
 def _print_json(value) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
+
+
+LOG_LEVEL_CHOICES = ["DEBUG", "INFO", "WARNING", "ERROR"]
+
+
+def _setup_logging(quiet: bool, level_name: str) -> None:
+    """Configure the root logger once at CLI startup.
+
+    ``--quiet`` raises the effective level to WARNING so per-fund
+    INFO progress lines (e.g. ``syncing 110022...``) don't drown
+    out the structured JSON that agents pipe to ``jq``. The
+    explicit ``--log-level`` always wins when set.
+    """
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    if quiet:
+        level = max(level, logging.WARNING)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+        force=True,
+    )
 
 
 def _add_common_db_arg(parser: argparse.ArgumentParser) -> None:
@@ -52,6 +75,24 @@ def _add_provider_arg(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Search, fetch, persist, and export Chinese fund data."
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help=(
+            "Suppress INFO-level progress lines on stderr. "
+            "Warnings and errors still surface. Useful when piping "
+            "the JSON output to jq, awk, or another agent."
+        ),
+    )
+    parser.add_argument(
+        "--log-level",
+        choices=LOG_LEVEL_CHOICES,
+        default="INFO",
+        help=(
+            "Minimum severity for stderr log output. "
+            "Overrides --quiet when set explicitly to DEBUG."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -295,6 +336,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _setup_logging(args.quiet, args.log_level)
 
     try:
         if args.command == "list":
