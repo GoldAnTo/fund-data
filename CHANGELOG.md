@@ -18,7 +18,7 @@ chronological order — see `git log` for the per-commit detail.
   `.github/workflows/release.yml` (auto GitHub release on tag push).
 - **Community files** — `CONTRIBUTING.md`, `SECURITY.md`,
   `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1),
-  `.github/ISSUE_TEMPLATE/{bug,feature}.yml`,
+  `.github/ISSUE_TEMPLATE/{bug,feature,docs}.yml`,
   `.github/PULL_REQUEST_TEMPLATE.md`.
 - **`scripts/coverage_report.py`** — produces a markdown table of
   per-dataset coverage % and stale rows for the local SQLite base.
@@ -27,6 +27,10 @@ chronological order — see `git log` for the per-commit detail.
 - **`scripts/doctor.py`** — now also detects a stale backfill
   state (no batch progress in >24h while the state file says
   the run is in progress). Promised in 0.1.0's known gaps.
+- **`scripts/investoday_profile_sync.py`** — bulk-import
+  `fund_profiles` rows from the Investoday (今日投资) provider's
+  `/fund/all` catalog. Idempotent, safe to run alongside the main
+  backfill, ~40 s for the full 27k-fund universe.
 - **`examples/`** — three runnable demo scripts (coverage report,
   watchlist sync, JSON export pipeline) for agents and new
   contributors.
@@ -45,6 +49,16 @@ chronological order — see `git log` for the per-commit detail.
   coverage); "Known gaps" rewritten to reflect that the v0.1.0
   list (`no CI`, `no nightly sync`, `38 stale failures`,
   `0.03 % coverage`) is done.
+- **`InvestodayProvider`** — `fund_list` now auto-paginates
+  (`pageSize=500` × 55 pages, was 10000 hardcoded which the API
+  rejects with HTTP 400); `search_funds` and the new `profile()`
+  read from an in-memory catalog cache (1-hour TTL) so a
+  backfill only hits `/fund/all` once. Both `INVESTODAY_API_KEY`
+  and the legacy `INVESTDATA_API_KEY` are accepted; the canonical
+  name is checked first. 9 unit tests added.
+- **Real DB coverage after the Investoday pass**:
+  `fund_profiles` 724 / 26,936 (2.69 %) → **26,632 / 26,936
+  (98.87 %)** in ~40 s, no extra API quota.
 
 ## 0.1.0 (2026-06-01)
 

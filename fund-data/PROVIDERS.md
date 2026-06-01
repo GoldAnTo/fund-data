@@ -15,12 +15,17 @@ points make a paid key worth it for a team/data base:
 ## Enabling Investoday (5 minutes)
 
 1. **Apply for a key** at <https://data-api.investoday.net>. The
-   free trial gives a few hundred calls; paid plans start at a few
-   hundred RMB/month.
+   free trial (200 calls / 30 days) is enough to validate the
+   integration; paid plans start at ¥12.9 / 5,000 calls (3 months).
 2. **Export the key** in your shell profile (or in the OpenClaw /
-   Codex / Claude runtime environment):
+   Codex / Claude runtime environment). The canonical name is
+   `INVESTODAY_API_KEY`; the older `INVESTDATA_API_KEY` is still
+   accepted as a fallback for setups that picked it up from the
+   Investoday console.
 
    ```bash
+   export INVESTODAY_API_KEY=xxxxxxxxxxxxxxxx
+   # or, legacy:
    export INVESTDATA_API_KEY=xxxxxxxxxxxxxxxx
    ```
 3. **Verify it loads**:
@@ -34,7 +39,7 @@ points make a paid key worth it for a team/data base:
    ```json
    "investoday": {
      "ok": true,
-     "skipped": "INVESTDATA_API_KEY not set"
+     "skipped": "INVESTODAY_API_KEY not set"
    }
    ```
 
@@ -49,6 +54,47 @@ points make a paid key worth it for a team/data base:
    ```bash
    .venv-akshare/bin/python3 scripts/backfill.py --include-all --report-year 2024
    ```
+
+## What your key actually unlocks
+
+Investoday's data plane is tiered (L1 基础 → L5 AI 特色). The
+**¥12.9 体验包 advertises "all API permissions"** but in practice
+the key only opens the L1 surface until you upgrade. Concretely,
+on the 体验包 we have observed:
+
+| Endpoint family | 体验包 (¥12.9) | Notes |
+|---|---|---|
+| `/fund/all` (L1 — 27k-fund catalog with 31 profile fields) | ✅ | The killer feature — full profile per fund in one call. |
+| `/fund/nav/history` (L1) | ⚠️ may be disabled | Falls back to Eastmoney; no data loss. |
+| `/fund/portfolio-stock-holdings` (L2) | ❌ 40001 `无效的接口` | Falls back to AkShare. |
+| `/fund/portfolio-bond-holdings` (L2) | ❌ | Falls back to AkShare. |
+| `/fund/portfolio-industry` (L2) | ❌ | Falls back to AkShare. |
+| `/fund/portfolio-manager` (L2) | ❌ | Falls back to AkShare. |
+| `/fund/fee` (L2) | ❌ | Falls back to AkShare. |
+| `/fund/dividend` (L2) | ❌ | Falls back to AkShare. |
+| `/fund/split` (L2) | ❌ | Falls back to AkShare. |
+
+If your key returns `code: 40001` / `无效的接口` from a portfolio
+endpoint, ask Investoday support to enable the L2 portfolio-* set
+on your account, or upgrade to the ¥45 基础包 / ¥80 专业包.
+
+## The one big win that *does* work on the 体验包
+
+The `InvestodayProvider.profile()` method reads from the
+`/fund/all` catalog, so the **L1 path is enough to take
+`fund_profiles` coverage from ~2.7 % to ~99 % in a single 40-second
+run**:
+
+```bash
+export INVESTODAY_API_KEY=xxxxxxxxxxxxxxxx
+python3 fund-data/scripts/investoday_profile_sync.py
+# ok=25828 fail_provider=0 fail_locked=0 elapsed=38s
+# fund_profiles: 26632 / 26936 funds (98.87 %)
+```
+
+The script is safe to re-run (idempotent INSERT OR REPLACE) and
+safe to run alongside the main backfill (it only writes to the
+`fund_profiles` table, which the backfill does not touch).
 
 ## Why auto mode picks the right order
 
