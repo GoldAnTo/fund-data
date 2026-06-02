@@ -8,7 +8,7 @@
 # on PYTHONPATH.
 #
 # Usage:
-#   ./run_tests.sh                  # all 178 tests
+#   ./run_tests.sh                  # all 227 tests
 #   ./run_tests.sh scripts.tests.test_fund_data   # one module
 #   ./run_tests.sh scripts.tests.test_fund_data.TestCase.test_method
 set -euo pipefail

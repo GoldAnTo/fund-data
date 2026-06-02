@@ -1,9 +1,14 @@
 # Nightly CI design — fund-data data-plane health gate
 
-**Status**: design only. No workflow is wired up yet. This document
-is the contract that the next implementation pass picks up and
-turns into a `.github/workflows/nightly.yml` plus a
-`scripts/ci/nightly_health_check.py` runner.
+**Status**: shipped (2026-06-01). The gate lives in
+`.github/workflows/nightly.yml` (job `nightly-data-plane-gate`,
+03:00 Asia/Shanghai / 19:00 UTC) and runs
+`scripts/ci/nightly_health_check.py` against the local SQLite +
+OSS bundle + manifest URL. This document is still the contract
+that any future change to the gate has to honor — treat the
+workflow as the source of truth for *what* runs, and this file
+as the source of truth for *why* it runs and what the on-call
+discipline is.
 
 **Owner**: whoever picks up the next sprint's "CI gate" ticket.
 **Last updated**: 2026-06-02.

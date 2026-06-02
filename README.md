@@ -5,7 +5,7 @@
 [![Nightly Sync](https://github.com/GoldAnTo/fund-data/actions/workflows/sync.yml/badge.svg)](https://github.com/GoldAnTo/fund-data/actions/workflows/sync.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](CHANGELOG.md)
 [![Last Commit](https://img.shields.io/github/last-commit/GoldAnTo/fund-data)](https://github.com/GoldAnTo/fund-data/commits/main)
 
 A local Chinese public fund data base. Wraps the no-key Eastmoney
@@ -24,9 +24,9 @@ data without re-deriving the parsing logic every time.
 
 | | |
 |---|---|
-| Core library | `fund-data/scripts/fund_data.py` (≈3.4k lines) |
+| Core library | `fund-data/scripts/fund_data.py` (≈3.6k lines) |
 | CLI | `fund-data/scripts/fund_cli.py` |
-| Tests | **148 unit tests**, all green (Python 3.11 / 3.12 / 3.13) |
+| Tests | **227 unit tests**, all green (Python 3.11 / 3.12 / 3.13) |
 | Default DB | `fund-data/data/fund_data.sqlite` (gitignored; rebuild on first run) |
 | Providers | Eastmoney (no key) → AkShare (optional) → Tushare (`TUSHARE_TOKEN`) → Investoday (`INVESTODAY_API_KEY`) |
 | Fund universe | 26,953 funds on first seed |
@@ -38,8 +38,8 @@ data without re-deriving the parsing logic every time.
 | Industry allocation coverage | 13,247 / 26,953 = **49.14 %** (AkShare) |
 | Fee coverage | 26,929 / 26,953 = **99.90 %** (AkShare + Eastmoney page fallback) |
 | Fund manager records | 4,055 distinct managers, 34,654 manager-fund rows |
-| `sync_failures` | **0** (last merge of query bundle v2026-06-02-130900) |
-| CI | test.yml (3.11 / 3.12 / 3.13) + lint.yml (ruff / black) + sync.yml (nightly 02:00 UTC) + release.yml + security.yml |
+| `sync_failures` | run `python3 fund-data/scripts/doctor.py` for current count (last verified 8 in the local full DB, 0 in the cloud query bundle — see `docs/nightly-ci-design.md` §1 for the dual-DB story) |
+| CI | test.yml (3.11 / 3.12 / 3.13) + lint.yml (ruff / black) + sync.yml (nightly backfill 02:00 UTC) + nightly.yml (data-plane gate 19:00 UTC) + release.yml + security.yml |
 | License | MIT |
 | Versioning | [Semantic Versioning 2.0](https://semver.org/) (0.x is allowed to break in minor) |
 
@@ -208,7 +208,7 @@ ossutil cp dist/fund-data/full/$VERSION/manifest.json \
 ## Tests
 
 ```bash
-# From the repo root — picks up all 178 tests across the skill:
+# From the repo root — picks up all 227 tests across the skill:
 ./run_tests.sh
 
 # Or directly, with PYTHONPATH so test files resolve `from scripts
@@ -275,7 +275,7 @@ on Python 3.11, 3.12, and 3.13.
     │   ├── retry_failures.py
     │   ├── coverage_report.py
     │   ├── install_skill.py
-    │   └── tests/           # 148 unittest cases
+    │   └── tests/           # 227 unittest cases
     └── data/                # SQLite DB + watchlist files (gitignored)
 ```
 

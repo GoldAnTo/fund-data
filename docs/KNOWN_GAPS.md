@@ -4,6 +4,29 @@ These items were identified during the 0.2.0 work but intentionally
 deferred so we could ship the WAL + Investoday + akShare + MCP
 work in one release. Track them in the next milestone.
 
+> **Status as of 2026-06-02** (re-audit during the 0.2.0 docs sync):
+>
+> - **#2 (Fees 18% → 95%)** — **shipped.** The
+>   `fee_structures(code, indicators=[...])` kwarg fix (commit
+>   `2ec363b`) plus the dedicated `fee_only_backfill.py` pass landed
+>   `fee_structures` at 80,097 rows / **100%** of the 26,936-fund
+>   pool (see `fund-data/AGENTS.md` "Data completeness snapshot").
+>   Remove this item when 0.3.0 starts.
+> - **#3 (Snapshots 16% → 100%)** — **partially shipped.**
+>   `snapshots` is at 25,774 / 26,936 = **95.7%**. The remaining
+>   380 are real API-surface gaps: Eastmoney rejects
+>   `eastmoney: fund code must contain 6 digits: ''` and
+>   `AkshareProvider` has no `snapshot()` method. Fix = add
+>   `AkshareProvider.snapshot` (see AGENTS.md follow-up #3).
+> - **#4 (Splits 0% → 95%+)** — **not actionable.** Splits is at
+>   2.2% (1,740 rows) because most active funds have never split.
+>   The ~470 rows that exist cluster in 2008–2015 era funds. A
+>   targeted re-sync of pre-2016 funds is the only path; for the
+>   rest the empty rows are correct, not a bug. Add
+>   "expected_empty" tagging to `coverage_report.py` so the
+>   percentage stops being misread as a regression.
+> - **#1, #5, #6, #7, #8** — still open, carry forward.
+
 ## 0.3.0 candidates, in priority order
 
 1. **`fund_managers` bulk sync** — the table is `manager-centric`
