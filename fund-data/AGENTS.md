@@ -232,6 +232,28 @@ after any `list` rebuild** — `--skip-existing` keeps blanks forever.
   column lists in the INSERT for `industry_allocations` and
   `fee_structures` until the upstream schema is unified.
 
+### AkShare v1.18.64 schema drift — bond/industry/stock providers broken (2026-06-02)
+
+AkShare `fund_portfolio_industry_allocation_em`, `fund_portfolio_bond_hold_em`,
+and `fund_portfolio_hold_em` all fail in v1.18.64 (and likely later) due to
+upstream Eastmoney API changes:
+
+| Function | Error | Root Cause |
+|---|---|---|
+| `fund_portfolio_industry_allocation_em` | `ValueError: Length mismatch: Expected axis has 1 elements, new values have 17 elements` | `reset_index()` creates a 1-col index, then `temp_df.columns = [...]` (17 cols) fails |
+| `fund_portfolio_bond_hold_em` | `KeyError: '占净值比例'` | Eastmoney renamed this column (new name unknown) |
+| `fund_portfolio_hold_em` | returns 0 rows (no crash) | API response shape changed, no error surfaced |
+
+**Fix options** (user decides, not hardcoded):
+1. **Add Investoday fallback for bond/industry** — `investoday.py` has `stock_holdings` but not `bond_holdings`/`industry_allocations`. Add them via `/fund/portfolio-bond-holdings` and `/fund/portfolio-industry-alloc` endpoints (API key already set).
+2. **Patch AkShare calls with column name fallbacks** — defensive `_first_value` already handles `占净值比例` aliases; the actual fix needs to be in AkShare itself (patch upstream or wrap the call in a try/except that skips `reset_index`).
+
+Until fixed: `run_provider_chain` correctly falls through AkShare → Investoday for `stock_holdings` (works), but `bond_holdings` and `industry_allocations` have no downstream provider in the chain — they return empty rows and the monitor sees 0 DB growth.
+
+**Operational impact (2026-06-02)**: 11 consecutive monitor cycles (105 min) of 0 DB growth across all three tables (548,975 / 415,700 / 2,475,195 frozen). `local-fill-backup-monitor` goes into restart→stall-kill loop because the spec has no "provider is dead" branch. Fix first, then re-enable the fillers.
+
+---
+
 ### Known follow-up work (PRs to open)
 
 1. `fix(akshare): use explicit column lists in _merge_separate_db` —
