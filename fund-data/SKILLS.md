@@ -79,6 +79,21 @@ Upload `fund_data_query.sqlite.gz` and its `.sha256` object first, then
 upload `current/manifest.json` last so clients never observe a
 half-published release.
 
+Full database archives are separate and private:
+
+```bash
+VERSION=$(date +%F-%H%M%S)
+python3 scripts/fund_cli.py cloud archive-full \
+  --source-db data/fund_data.sqlite \
+  --output-dir ../dist/fund-data/full/$VERSION \
+  --base-url oss://YOUR_PRIVATE_BUCKET/fund-data/full/$VERSION/ \
+  --version $VERSION
+```
+
+The full archive keeps `raw_responses`, `sync_runs`, and
+`sync_failures` for audit/rebuild use. Store it in a private bucket or
+private object prefix, not the public query-bundle path.
+
 ## MCP server
 
 Platforms that support MCP can run the bundled stdio server directly:

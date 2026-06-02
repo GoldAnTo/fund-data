@@ -96,6 +96,42 @@ class FundCloudBundleTests(unittest.TestCase):
             with gzip.open(query_gz, "rb") as gz:
                 self.assertEqual(gz.read(16), query_db.read_bytes()[:16])
 
+    def test_archive_full_creates_private_snapshot_with_raw_responses(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_db = self._source_db(tmpdir)
+            archive_dir = Path(tmpdir) / "dist" / "full" / "2026-06-01"
+
+            result = fund_cloud.archive_full(
+                source_db=source_db,
+                output_dir=archive_dir,
+                base_url="oss://fund-data-private/fund-data/full/2026-06-01/",
+                version="2026-06-01",
+            )
+
+            full_db = archive_dir / "fund_data_full.sqlite"
+            full_gz = archive_dir / "fund_data_full.sqlite.gz"
+            manifest_path = archive_dir / "manifest.json"
+            self.assertTrue(full_db.is_file())
+            self.assertTrue(full_gz.is_file())
+            self.assertTrue((archive_dir / "fund_data_full.sqlite.gz.sha256").is_file())
+            self.assertTrue(manifest_path.is_file())
+            self.assertEqual(result["manifest"]["kind"], "fund-data-full-archive")
+            self.assertEqual(result["manifest"]["files"]["full_db"]["url"], None)
+            self.assertEqual(
+                result["manifest"]["files"]["full_db"]["oss_uri"],
+                "oss://fund-data-private/fund-data/full/2026-06-01/fund_data_full.sqlite.gz",
+            )
+            self.assertEqual(result["manifest"]["tables"]["funds"], 1)
+            self.assertEqual(result["manifest"]["tables"]["raw_responses"], 1)
+            with closing(sqlite3.connect(full_db)) as conn:
+                raw_count = conn.execute("select count(*) from raw_responses").fetchone()[0]
+                failure_count = conn.execute("select count(*) from sync_failures").fetchone()[0]
+            self.assertEqual(raw_count, 1)
+            self.assertEqual(failure_count, 1)
+
+            with gzip.open(full_gz, "rb") as gz:
+                self.assertEqual(gz.read(16), full_db.read_bytes()[:16])
+
     def test_pull_bundle_downloads_verifies_and_installs_current_cache(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source_db = self._source_db(tmpdir)

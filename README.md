@@ -172,6 +172,31 @@ cached query database when `FUND_DATA_DB` is not set. Use
 `FUND_DATA_CACHE_DIR` to move the cache, or `FUND_DATA_DB` to override
 the database path explicitly.
 
+Full database archives should be private. They keep `raw_responses`,
+sync logs, and failure queues for audit/rebuild use, so do not publish
+them through a public-read bucket or public prefix.
+
+```bash
+VERSION=$(date +%F-%H%M%S)
+python3 fund-data/scripts/fund_cli.py cloud archive-full \
+  --source-db fund-data/data/fund_data.sqlite \
+  --output-dir dist/fund-data/full/$VERSION \
+  --base-url oss://YOUR_PRIVATE_BUCKET/fund-data/full/$VERSION/ \
+  --version $VERSION
+```
+
+Upload the generated private archive with `ossutil cp` only to a
+private bucket or to objects with private ACL:
+
+```bash
+ossutil cp dist/fund-data/full/$VERSION/fund_data_full.sqlite.gz \
+  oss://YOUR_PRIVATE_BUCKET/fund-data/full/$VERSION/
+ossutil cp dist/fund-data/full/$VERSION/fund_data_full.sqlite.gz.sha256 \
+  oss://YOUR_PRIVATE_BUCKET/fund-data/full/$VERSION/
+ossutil cp dist/fund-data/full/$VERSION/manifest.json \
+  oss://YOUR_PRIVATE_BUCKET/fund-data/full/$VERSION/
+```
+
 ## Tests
 
 ```bash

@@ -104,6 +104,9 @@ release workflow).
   SHA-256, and let MCP/CLI default to the pulled cache when
   `FUND_DATA_DB` is unset. The MCP server also exposes
   `fund_cloud_status`.
+- **Private full archives** — `fund-cli cloud archive-full` creates a
+  consistent compressed SQLite snapshot that keeps `raw_responses`,
+  `sync_runs`, and `sync_failures` for private OSS backup.
 
 ### Changed
 
