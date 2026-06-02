@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import os
 import socket
+import urllib.request
 
 _APPLIED = False
 
@@ -75,6 +76,43 @@ def _ipv4_only_getaddrinfo(host, port, *args, **kwargs):  # noqa: ANN001
     return ipv4 if ipv4 else results
 
 
+def _empty_proxies() -> dict[str, str]:
+    """Return ``{}`` so ``urllib.request.urlopen`` skips the
+    system proxy.  ``scutil --proxy`` and Clash Verge launchd
+    injection do not set env vars we can ``unset``; patching
+    ``urllib.request.getproxies`` is the only Python-level
+    knob that works.
+    """
+    return {}
+
+
+def _patch_requests_session() -> None:
+    """Default ``requests.Session().proxies`` to ``{"http": "",
+    "https": ""}`` so the ``requests`` library -- which AkShare
+    uses -- also bypasses the system proxy.
+
+    Empty string in ``requests >= 2.10`` means "do not use a
+    proxy for this scheme", which is what we want.
+
+    Idempotent: a sentinel attribute on the patched function
+    prevents re-wrapping on subsequent imports.
+    """
+    try:
+        import requests
+    except ImportError:
+        return
+    if getattr(requests.Session.__init__, "_no_proxied", False):
+        return
+    _orig_init = requests.Session.__init__
+
+    def _patched_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        _orig_init(self, *args, **kwargs)
+        self.proxies = {"http": "", "https": ""}
+
+    _patched_init._no_proxied = True  # type: ignore[attr-defined]
+    requests.Session.__init__ = _patched_init
+
+
 def apply() -> None:
     """Apply the macOS proxy + IPv4 + sqlite-timeout patches in-place.  Idempotent."""
     global _APPLIED
@@ -83,9 +121,24 @@ def apply() -> None:
 
     # 1. Strip the env-var layer of the proxy stack.  We do *not*
     # touch ``scutil --proxy`` or third-party app launchd injection
-    # -- both would change the user's daily network.
+    # -- both would change the user's daily network.  urllib and
+    # requests need an additional Python-level patch (see below)
+    # to skip those two remaining layers.
     for var in _PROXY_ENV_VARS:
         os.environ.pop(var, None)
+
+    # 1b. Force ``urllib.request.getproxies`` to return ``{}``.
+    # ``urlopen`` consults this before honouring ``$http_proxy``,
+    # and on macOS it can also synthesise an answer from
+    # ``scutil --proxy`` when no env var is set.  Patching the
+    # function bypasses both paths.
+    urllib.request.getproxies = _empty_proxies
+
+    # 1c. Default ``requests.Session().proxies`` to ``{}`` so the
+    # ``requests`` library -- which AkShare uses -- also bypasses
+    # the system proxy.  Per-request ``proxies=`` overrides
+    # continue to work.
+    _patch_requests_session()
 
     # 2. Force ``socket.getaddrinfo`` to skip IPv6 answers.  This
     # patches the CPython attribute, not the underlying C
