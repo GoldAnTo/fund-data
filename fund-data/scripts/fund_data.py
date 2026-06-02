@@ -733,6 +733,53 @@ class AkshareProvider:
         rows.sort(key=lambda row: row["nav_date"], reverse=True)
         return rows
 
+    def snapshot(self, code: str) -> dict[str, Any]:
+        """AkShare fallback for funds whose Eastmoney snapshot is empty.
+
+        Background: back-end share classes (``000002`` / ``000012`` /
+        ``000108`` / ...) and a few delisted / merged share classes
+        hit a stub Eastmoney ``pingzhongdata/{code}.js`` page that
+        parses to ``None``. With no ``AkshareProvider.snapshot`` the
+        provider chain cannot recover and the fund lands in
+        ``sync_failures``. This method assembles a snapshot dict in
+        the same shape as :func:`parse_snapshot` (so
+        :meth:`FundDataStore.upsert_snapshot` stores it without
+        branching on provider) by reusing the existing
+        :meth:`profile` and :meth:`stock_holdings` calls.
+
+        AkShare does not expose ``source_rate`` / ``current_rate`` /
+        ``min_purchase`` / a returns panel on its public endpoints
+        in a form the parser can trust, so those are returned as
+        ``None`` / empty. The goal here is "row exists, partial but
+        structured" so the 380-fund ``sync_failures`` backlog can
+        close; richer fields can be filled in by a later patch that
+        re-fetches from Investoday / Eastmoney when those come back
+        online.
+
+        Returns an empty dict on any failure so the provider chain
+        can fall through to the next provider (or so the caller
+        surfaces "no snapshot" instead of a 500).
+        """
+        normalized = normalize_fund_code(code)
+        try:
+            profile = self.profile(normalized)
+            holdings = self.stock_holdings(normalized)
+        except Exception:
+            return {}
+        stock_codes = [
+            str(h["stock_code"]) for h in holdings if h.get("stock_code")
+        ]
+        return {
+            "fund_code": normalized,
+            "fund_name": profile.get("fund_name", ""),
+            "source_rate": None,
+            "current_rate": None,
+            "min_purchase": None,
+            "stock_codes": stock_codes,
+            "returns": {},
+            "source": "akshare.profile+stock_holdings",
+        }
+
     def stock_holdings(self, code: str, *, report_year: str | None = None) -> list[dict[str, Any]]:
         year = report_year or str(datetime.now().year - 1)
         rows = []
