@@ -24,7 +24,7 @@ except ImportError:  # pragma: no cover - exercised by direct script execution
     import fund_data
 
 SERVER_NAME = "fund-data"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = {
     "2024-11-05",
