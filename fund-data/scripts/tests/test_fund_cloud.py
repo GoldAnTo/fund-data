@@ -341,6 +341,92 @@ class CloudCliSubcommandTests(unittest.TestCase):
             self.assertIn("query_db_path", payload)
             self.assertEqual(payload["release_dir"], fake_result["release_dir"])
 
+    def test_upload_dry_run_reports_planned_artifacts_without_calling_ossutil(self):
+        # ``cloud upload --dry-run`` must build the response
+        # envelope (version / bucket / region / prefix /
+        # manifest_url / uploaded[]) without shelling out to
+        # ossutil. That way an agent can preview the blast
+        # radius in CI before flipping the switch.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            release_dir = tmp_path / "2026-06-02"
+            release_dir.mkdir()
+            (release_dir / fund_cloud.QUERY_ARCHIVE_NAME).write_bytes(
+                b"fake-gz-payload"
+            )
+            (release_dir / f"{fund_cloud.QUERY_ARCHIVE_NAME}.sha256").write_text(
+                "deadbeef  fund_data_query.sqlite.gz\n", encoding="utf-8"
+            )
+            manifest_path = tmp_path / "manifest.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+            with mock.patch.object(
+                fund_cloud, "_ossutil_upload"
+            ) as mock_upload, mock.patch.object(
+                fund_cloud.subprocess, "run"
+            ) as mock_run:
+                result = fund_cloud.upload_to_oss(
+                    release_dir=release_dir,
+                    manifest_path=manifest_path,
+                    dry_run=True,
+                )
+            # Dry-run still routes through the _ossutil_upload
+            # helper (it is the place where the ``if dry_run:
+            # return`` short-circuit lives), but the
+            # underlying ``subprocess.run`` that talks to
+            # ossutil is never invoked. The CLI consumer never
+            # sees a real upload.
+            self.assertEqual(mock_upload.call_count, 3)
+            mock_run.assert_not_called()
+            payload = result.to_dict()
+            # Pin the top-level schema so a future refactor
+            # cannot silently rename any of these keys -- the
+            # CI gate branches on every one of them.
+            self.assertEqual(set(payload.keys()), {
+                "version",
+                "bucket",
+                "region",
+                "prefix",
+                "manifest_url",
+                "uploaded",
+                "dry_run",
+            })
+            self.assertTrue(payload["dry_run"])
+            self.assertEqual(payload["version"], "2026-06-02")
+            self.assertEqual(payload["bucket"], fund_cloud.DEFAULT_BUCKET)
+            self.assertEqual(payload["region"], fund_cloud.DEFAULT_REGION)
+            # The .gz + sha256 + manifest = 3 artifacts.
+            self.assertEqual(len(payload["uploaded"]), 3)
+            # And the manifest URL is the public HTTPS one, not
+            # the oss:// URI.
+            self.assertIn("https://", payload["manifest_url"])
+            self.assertNotIn("oss://", payload["manifest_url"])
+
+    def test_upload_missing_release_dir_raises(self):
+        # The agent must get a clear FileNotFoundError before
+        # we shell out to ossutil -- otherwise the response
+        # envelope would silently land at the wrong prefix.
+        with self.assertRaises(FileNotFoundError):
+            fund_cloud.upload_to_oss(
+                release_dir="/nonexistent/release-2026-06-02",
+                dry_run=True,
+            )
+
+    def test_upload_missing_gz_artifact_raises(self):
+        # A release dir without the gzip db (e.g. a half-built
+        # build-bundle) is an error -- never silently upload
+        # the .sha256 alone.
+        with tempfile.TemporaryDirectory() as tmp:
+            release_dir = Path(tmp) / "2026-06-02"
+            release_dir.mkdir()
+            (release_dir / f"{fund_cloud.QUERY_ARCHIVE_NAME}.sha256").write_text(
+                "deadbeef  fund_data_query.sqlite.gz\n", encoding="utf-8"
+            )
+            with self.assertRaises(FileNotFoundError):
+                fund_cloud.upload_to_oss(
+                    release_dir=release_dir,
+                    dry_run=True,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

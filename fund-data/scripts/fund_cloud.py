@@ -7,7 +7,9 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -370,3 +372,181 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+# --- OSS upload --------------------------------------------------------
+#
+# The release artifacts (``fund_data_query.sqlite.gz``,
+# ``fund_data_query.sqlite.gz.sha256`` and the manifest) live
+# under a per-version directory. The CI workflow runs
+# ``cloud upload`` after ``cloud build-bundle`` to copy the
+# three files into the bucket and publish the manifest at
+# ``current/manifest.json`` so ``cloud pull`` consumers see
+# the new version without re-deploying.
+#
+# We shell out to ``ossutil`` (the official Alibaba Cloud CLI)
+# rather than the HTTP SDK because the agent environment
+# already has it on PATH with a configured
+# ``~/.ossutilconfig`` -- no extra Python dependency, no
+# per-machine bootstrap, and the same command works from
+# cron / GitHub Actions / a developer laptop.
+
+OSSUTIL_BIN = "ossutil"
+DEFAULT_BUCKET = "fund-data-public-l"
+DEFAULT_PREFIX = "fund-data"
+DEFAULT_REGION = "cn-shanghai"
+
+
+@dataclass
+class UploadResult:
+    """Outcome of :func:`upload_to_oss` -- what was pushed, where,
+    and the public manifest URL consumers will read.
+
+    Stable JSON schema that the agent CI gate branches on:
+    ``version``, ``bucket``, ``region``, ``prefix``, ``manifest_url``,
+    ``uploaded`` (list of {local, remote, size_bytes, sha256}).
+    """
+
+    version: str
+    bucket: str
+    region: str
+    prefix: str
+    manifest_url: str
+    uploaded: list[dict[str, Any]]
+    dry_run: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "bucket": self.bucket,
+            "region": self.region,
+            "prefix": self.prefix,
+            "manifest_url": self.manifest_url,
+            "uploaded": list(self.uploaded),
+            "dry_run": self.dry_run,
+        }
+
+
+def _ossutil_upload(local: Path, remote: str, *, dry_run: bool = False) -> None:
+    """Invoke ``ossutil cp -f local remote`` and raise a clear
+    error if the upload does not finish. ``-f`` is required --
+    without it ossutil prompts "y or N" on existing keys, which
+    hangs the non-interactive shell."""
+    cmd = [OSSUTIL_BIN, "cp", "-f", str(local), remote]
+    if dry_run:
+        return
+    result = subprocess.run(
+        cmd,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ossutil upload failed ({result.returncode}): {result.stderr.strip()}"
+        )
+
+
+def upload_to_oss(
+    *,
+    release_dir: str | Path,
+    bucket: str = DEFAULT_BUCKET,
+    region: str = DEFAULT_REGION,
+    prefix: str = DEFAULT_PREFIX,
+    manifest_path: str | Path | None = None,
+    dry_run: bool = False,
+) -> UploadResult:
+    """Upload a ``cloud build-bundle`` release to OSS.
+
+    Pushes the gzip db + sha256 into ``{prefix}/releases/{version}/``
+    and (when ``manifest_path`` is provided) the manifest into
+    ``{prefix}/current/manifest.json``. Returns an
+    :class:`UploadResult` with the public manifest URL.
+
+    Parameters
+    ----------
+    release_dir:
+        The directory that ``build_bundle`` produced -- must
+        contain ``fund_data_query.sqlite.gz`` and the matching
+        ``.sha256`` sidecar.
+    bucket:
+        OSS bucket name. Defaults to ``fund-data-public-l``.
+    region:
+        OSS region. Defaults to ``cn-shanghai``.
+    prefix:
+        Object key prefix. The release goes under
+        ``{prefix}/releases/{version}/`` and the manifest
+        under ``{prefix}/current/manifest.json``.
+    manifest_path:
+        Path to a manifest.json to publish at
+        ``{prefix}/current/manifest.json``. When ``None`` the
+        manifest is not republished -- pass it to keep the
+        ``current/`` pointer in sync with the just-uploaded
+        release.
+    dry_run:
+        Skip the ossutil calls and just return the planned
+        ``uploaded`` list. Useful in CI to preview what would
+        land in OSS.
+    """
+    release_path = Path(release_dir)
+    if not release_path.is_dir():
+        raise FileNotFoundError(f"release directory does not exist: {release_path}")
+    # We upload the *gzipped* db, not the raw .sqlite. The raw
+    # file (852 MB) is a build intermediate kept around for
+    # local debugging -- the public artifact is the 121 MB gz
+    # that the manifest already points consumers at.
+    archive_path = release_path / QUERY_ARCHIVE_NAME
+    sha_path = release_path / f"{QUERY_ARCHIVE_NAME}.sha256"
+    if not archive_path.is_file():
+        raise FileNotFoundError(f"missing query db archive: {archive_path}")
+    if not sha_path.is_file():
+        raise FileNotFoundError(f"missing sha256 sidecar: {sha_path}")
+
+    # The release id is the directory name. build_bundle
+    # writes ``{version}/`` to keep every release immutable --
+    # an updated dataset lives under a new directory and the
+    # current/ pointer is republished.
+    version = _safe_version(release_path.name)
+    release_prefix = f"{prefix}/releases/{version}"
+    archive_remote = f"oss://{bucket}/{release_prefix}/{QUERY_ARCHIVE_NAME}"
+    sha_remote = f"oss://{bucket}/{release_prefix}/{QUERY_ARCHIVE_NAME}.sha256"
+    base_url = f"https://{bucket}.oss-{region}.aliyuncs.com"
+
+    uploaded: list[dict[str, Any]] = []
+    for local, remote in ((archive_path, archive_remote), (sha_path, sha_remote)):
+        _ossutil_upload(local, remote, dry_run=dry_run)
+        uploaded.append(
+            {
+                "local": str(local),
+                "remote": remote,
+                "size_bytes": local.stat().st_size,
+            }
+        )
+
+    manifest_url = ""
+    if manifest_path is not None:
+        manifest_remote = f"oss://{bucket}/{prefix}/current/manifest.json"
+        _ossutil_upload(Path(manifest_path), manifest_remote, dry_run=dry_run)
+        uploaded.append(
+            {
+                "local": str(manifest_path),
+                "remote": manifest_remote,
+                "size_bytes": Path(manifest_path).stat().st_size,
+            }
+        )
+        manifest_url = f"{base_url}/{prefix}/current/manifest.json"
+    else:
+        manifest_url = (
+            f"{base_url}/{prefix}/releases/{version}/manifest.json"
+        )
+
+    return UploadResult(
+        version=version,
+        bucket=bucket,
+        region=region,
+        prefix=prefix,
+        manifest_url=manifest_url,
+        uploaded=uploaded,
+        dry_run=dry_run,
+    )

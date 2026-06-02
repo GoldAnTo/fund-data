@@ -402,6 +402,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the JSON result to this file instead of stdout.",
     )
 
+    upload = cloud_subparsers.add_parser(
+        "upload",
+        help="Upload a built release directory to OSS via ossutil. "
+        "Pushes the gzip db + sha256 sidecar to "
+        "{prefix}/releases/{version}/ and, when --manifest is given, "
+        "the manifest to {prefix}/current/manifest.json so cloud pull "
+        "consumers see the new version without re-deploying.",
+    )
+    upload.add_argument(
+        "--release-dir",
+        required=True,
+        help="Directory produced by `cloud build-bundle` (must contain "
+        "fund_data_query.sqlite.gz and the matching .sha256 sidecar).",
+    )
+    upload.add_argument(
+        "--bucket",
+        default=fund_cloud.DEFAULT_BUCKET,
+        help=f"OSS bucket name (default: {fund_cloud.DEFAULT_BUCKET}).",
+    )
+    upload.add_argument(
+        "--region",
+        default=fund_cloud.DEFAULT_REGION,
+        help=f"OSS region (default: {fund_cloud.DEFAULT_REGION}).",
+    )
+    upload.add_argument(
+        "--prefix",
+        default=fund_cloud.DEFAULT_PREFIX,
+        help=f"OSS object key prefix (default: {fund_cloud.DEFAULT_PREFIX}).",
+    )
+    upload.add_argument(
+        "--manifest",
+        help="Optional path to a manifest.json to publish at "
+        "{prefix}/current/manifest.json. The manifest URL is "
+        "included in the JSON response.",
+    )
+    upload.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Skip the ossutil calls and just return the planned upload list.",
+    )
+    upload.add_argument(
+        "--output",
+        help="Write the JSON result to this file instead of stdout.",
+    )
+
     return parser
 
 
@@ -701,6 +746,21 @@ def main(argv: list[str] | None = None) -> int:
                     cache_dir=args.cache_dir,
                     manifest_url=args.manifest_url,
                 )
+                if args.output:
+                    _write_json_to_file(args.output, payload)
+                else:
+                    _print_json(payload)
+                return 0
+            if args.cloud_command == "upload":
+                result = fund_cloud.upload_to_oss(
+                    release_dir=args.release_dir,
+                    bucket=args.bucket,
+                    region=args.region,
+                    prefix=args.prefix,
+                    manifest_path=args.manifest,
+                    dry_run=args.dry_run,
+                )
+                payload = result.to_dict()
                 if args.output:
                     _write_json_to_file(args.output, payload)
                 else:
