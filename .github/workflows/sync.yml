@@ -130,7 +130,7 @@ jobs:
 
       - name: Upload backfill summary
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backfill-summary-${{ github.run_id }}
           path: |
@@ -139,7 +139,7 @@ jobs:
 
       - name: Upload backfill log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backfill-log-${{ github.run_id }}
           path: fund-data/data/backfill_logs/
