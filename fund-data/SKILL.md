@@ -276,6 +276,50 @@ Set `FUND_DATA_CACHE_DIR` to move that cache, or `FUND_DATA_DB` to force
 a specific SQLite file. MCP clients can call `fund_cloud_status` before
 querying to check installed and remote versions.
 
+## Nightly Data-Plane Health Gate
+
+A GitHub Actions cron workflow (`.github/workflows/nightly.yml`)
+runs a four-step data-plane health gate every night at
+03:00 Asia/Shanghai. The design contract is in
+`docs/nightly-ci-design.md`; the runner is
+`scripts/ci/nightly_health_check.py`. Concretely:
+
+1. `fund_cli.py doctor --skip-network` — schema, sync_failures,
+   coverage regression check
+2. `fund_cli.py cloud build-bundle` — rebuilds the gzipped
+   query db + sha256 + manifest
+3. `fund_cli.py cloud upload` — pushes the release to OSS via
+   ossutil
+4. `fund_cli.py cloud pull` — pulls the just-uploaded manifest
+   down and verifies the sha256 against step 2
+
+The runner distinguishes **transient** failures (ossutil 5xx,
+SSL blip, timeout — retried up to 3x with 60s/120s/240s
+backoff) from **data** failures (sha256 mismatch, schema
+drift, sync_failures — never retried, escalated immediately).
+The discipline is the same one the backfill runners use;
+re-trying a real data failure only hides the regression.
+
+Manual rerun is wired up via `workflow_dispatch` so the
+on-call human does not have to wait until 03:00 the next
+night to verify a fix. The CI workflow needs the
+`OSS_DEPLOY_KEY_ID` / `OSS_DEPLOY_KEY_SECRET` repo secrets
+(a deploy-only key with PutObject + GetObject on
+`fund-data-public-l`, *not* the user's personal
+`~/.ossutilconfig`).
+
+The runner is also runnable locally for an on-call human who
+wants the same data-plane health status CI sees:
+
+```bash
+python3 scripts/ci/nightly_health_check.py \
+  --db fund-data/data/fund_data.sqlite \
+  --release-dir /tmp/nightly-release \
+  --manifest-output /tmp/nightly-release/manifest.json \
+  --output /tmp/nightly-summary.json
+# exit 0 = all green; 1 = data failure; 2 = transient exhausted
+```
+
 ## Source Notes
 
 No-key Eastmoney endpoints used by `scripts/fund_data.py`:

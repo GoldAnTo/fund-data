@@ -1,0 +1,107 @@
+name: nightly-data-plane-gate
+
+# Nightly data-plane health gate. Runs the four-step
+# ``scripts/ci/nightly_health_check.py`` runner and posts a
+# per-step summary as a workflow artifact so the on-call
+# human can diff against the previous night.
+#
+# See ``docs/nightly-ci-design.md`` for the design contract
+# and the retry-vs-escalate discipline this gate enforces.
+#
+# Schedule: 03:00 Asia/Shanghai (19:00 UTC). The deploy key
+# is set via OSS_DEPLOY_KEY_ID / OSS_DEPLOY_KEY_SECRET repo
+# secrets -- not the user's personal ~/.ossutilconfig. The
+# key only needs PutObject + GetObject on the
+# ``fund-data-public-l`` bucket.
+
+on:
+  schedule:
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+
+jobs:
+  nightly-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: install-runtime-deps
+        run: |
+          python -m pip install -q -r requirements.txt
+
+      - name: install-ossutil
+        run: |
+          # ossutil is the official Alibaba Cloud CLI. We pin
+          # the release tag so the runner does not silently
+          # pick up a newer build whose command-line surface
+          # may have changed.
+          curl -sSL -o /tmp/ossutil64.zip \
+            https://github.com/aliyun/ossutil/releases/download/v1.7.18/ossutil64-1.7.18-linux.zip
+          unzip -q /tmp/ossutil64.zip -d /tmp/ossutil
+          sudo mv /tmp/ossutil/ossutil64 /usr/local/bin/ossutil
+          rm -rf /tmp/ossutil /tmp/ossutil64.zip
+          ossutil --version
+
+      - name: configure-ossutil-deploy-key
+        run: |
+          mkdir -p ~/.ossutilconfig
+          cat > ~/.ossutilconfig <<EOF
+          [default]
+          accessKeyId=${{ secrets.OSS_DEPLOY_KEY_ID }}
+          accessKeySecret=${{ secrets.OSS_DEPLOY_KEY_SECRET }}
+          region=cn-shanghai
+          endpoint=https://oss-cn-shanghai.aliyuncs.com
+          EOF
+          chmod 600 ~/.ossutilconfig
+          # The deploy key only needs PutObject + GetObject on
+          # ``fund-data-public-l``; that is the IAM policy that
+          # produces the secret. Scope the smoke test to a
+          # single ls so a misconfigured key fails fast.
+          ossutil ls oss://fund-data-public-l/
+
+      - name: run-nightly-gate
+        id: gate
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/nightly-release /tmp/nightly-artifacts
+          python scripts/ci/nightly_health_check.py \
+            --db fund-data/data/fund_data.sqlite \
+            --release-dir /tmp/nightly-release \
+            --manifest-output /tmp/nightly-release/manifest.json \
+            --output /tmp/nightly-artifacts/summary.json \
+            | tee /tmp/nightly-artifacts/stdout.json
+          rc=$?
+          echo "exit_code=$rc"
+          # Per-step outputs are written to the well-known
+          # /tmp paths the runner pinned (see
+          # nightly_health_check.py), so we just copy them
+          # alongside the summary.
+          cp /tmp/nightly-doctor.json /tmp/nightly-artifacts/ || true
+          cp /tmp/nightly-build.json /tmp/nightly-artifacts/ || true
+          cp /tmp/nightly-upload.json /tmp/nightly-artifacts/ || true
+          cp /tmp/nightly-pull.json /tmp/nightly-artifacts/ || true
+          exit $rc
+
+      - name: upload-artifacts-on-failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-data-plane-failure-${{ github.run_id }}
+          path: /tmp/nightly-artifacts/
+          retention-days: 30
+
+      - name: upload-artifacts-on-success
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-data-plane-success-${{ github.run_id }}
+          path: /tmp/nightly-artifacts/summary.json
+          retention-days: 7
