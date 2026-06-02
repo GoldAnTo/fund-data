@@ -383,6 +383,8 @@ def main(argv: list[str] | None = None) -> int:
     # require importing fund_data earlier, which pulls in
     # optional runtime deps.
     if args.db is None:
+        import sys
+        sys.path.insert(0, str(SCRIPT_DIR.parent.parent / "fund-data"))
         import fund_data
         args.db = str(fund_data.default_db_path())
 
