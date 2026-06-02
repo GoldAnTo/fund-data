@@ -1427,6 +1427,192 @@ class SchemaMigrationTests(unittest.TestCase):
                 cols = {row[1] for row in conn.execute(f"pragma table_info({table})")}
                 self.assertIn(column, cols, f"{table}.{column} missing after migration")
 
+    def test_fresh_db_has_canonical_column_order(self) -> None:
+        """After v5, a brand-new DB's industry_allocations and
+        fee_structures tables must declare the migration-added
+        columns at the END of the column list (matching what
+        ALTER TABLE produces on an upgraded DB). Otherwise
+        the next schema-drift incident is just a code change
+        away."""
+        fund_data.FundDataStore(str(self.db)).ensure_schema()
+        with sqlite3.connect(str(self.db)) as conn:
+            industry_cols = [
+                row[1] for row in conn.execute("PRAGMA table_info(industry_allocations)")
+            ]
+            fee_cols = [
+                row[1] for row in conn.execute("PRAGMA table_info(fee_structures)")
+            ]
+        self.assertEqual(
+            industry_cols,
+            [
+                "fund_code", "report_period", "industry_name",
+                "net_value_ratio", "source", "fetched_at", "market_value",
+            ],
+        )
+        self.assertEqual(
+            fee_cols,
+            [
+                "fund_code", "fee_type", "condition_name",
+                "fee", "source", "fetched_at",
+                "fee_text", "discount_fee", "discount_fee_text",
+            ],
+        )
+
+    def test_v5_migration_reorders_drifted_columns_preserving_data(self) -> None:
+        """Regression guard for the 2026-06-02 schema-drift incident:
+        a v4 DB whose ``industry_allocations.market_value`` sits at
+        column position 5 (mid-table) and ``fee_structures`` whose
+        fee_text / discount_fee / discount_fee_text also sit
+        mid-table must be re-ordered by v5 into the canonical
+        order, preserving every row's values."""
+        # Build a v4-shaped DB: run ensure_schema, then drop the
+        # v5 migration entry and rewind user_version to 4 so v5
+        # will run on next open. Then manually recreate the
+        # mid-table column order that the pre-fix schema produced.
+        fund_data.FundDataStore(str(self.db)).ensure_schema()
+        with sqlite3.connect(str(self.db)) as conn:
+            # Delete the v5 audit row (if any) and rewind.
+            conn.execute("DELETE FROM schema_migrations WHERE version >= 5")
+            conn.execute("PRAGMA user_version = 4")
+            # Recreate the two tables in the OLD order (market_value
+            # mid-table for industry, fee_text / discount_fee /
+            # discount_fee_text mid-table for fee). We re-insert
+            # the rows so we can assert v5 preserves them.
+            conn.executescript("""
+                ALTER TABLE industry_allocations RENAME TO industry_allocations__old;
+                CREATE TABLE industry_allocations (
+                    fund_code text not null,
+                    report_period text not null,
+                    industry_name text not null,
+                    net_value_ratio real,
+                    market_value real,
+                    source text,
+                    fetched_at text not null,
+                    primary key (fund_code, report_period, industry_name)
+                );
+                INSERT INTO industry_allocations
+                    SELECT fund_code, report_period, industry_name,
+                           net_value_ratio, market_value, source, fetched_at
+                    FROM industry_allocations__old;
+                DROP TABLE industry_allocations__old;
+
+                ALTER TABLE fee_structures RENAME TO fee_structures__old;
+                CREATE TABLE fee_structures (
+                    fund_code text not null,
+                    fee_type text not null,
+                    condition_name text not null,
+                    fee real,
+                    fee_text text,
+                    discount_fee real,
+                    discount_fee_text text,
+                    source text,
+                    fetched_at text not null,
+                    primary key (fund_code, fee_type, condition_name)
+                );
+                INSERT INTO fee_structures
+                    SELECT fund_code, fee_type, condition_name, fee,
+                           fee_text, discount_fee, discount_fee_text,
+                           source, fetched_at
+                    FROM fee_structures__old;
+                DROP TABLE fee_structures__old;
+            """)
+            # Seed a row we can verify survives the rebuild.
+            conn.execute(
+                """INSERT INTO industry_allocations
+                       (fund_code, report_period, industry_name,
+                        net_value_ratio, market_value, source, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "110022", "2024Q4", "制造业",
+                    0.8321, 12345.67, "v4-drift", "2025-01-01T00:00:00+00:00",
+                ),
+            )
+            conn.execute(
+                """INSERT INTO fee_structures
+                       (fund_code, fee_type, condition_name, fee,
+                        fee_text, discount_fee, discount_fee_text,
+                        source, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "110022", "申购费率", "小于100万元", 0.15,
+                    "0.15%", 0.10, "0.10%",
+                    "v4-drift", "2025-01-01T00:00:00+00:00",
+                ),
+            )
+            conn.commit()
+
+        # Open the DB. ensure_schema must run v5 and reorder.
+        fund_data.FundDataStore(str(self.db)).ensure_schema()
+
+        with sqlite3.connect(str(self.db)) as conn:
+            industry_cols = [
+                row[1] for row in conn.execute("PRAGMA table_info(industry_allocations)")
+            ]
+            fee_cols = [
+                row[1] for row in conn.execute("PRAGMA table_info(fee_structures)")
+            ]
+            self.assertEqual(
+                industry_cols,
+                [
+                    "fund_code", "report_period", "industry_name",
+                    "net_value_ratio", "source", "fetched_at", "market_value",
+                ],
+            )
+            self.assertEqual(
+                fee_cols,
+                [
+                    "fund_code", "fee_type", "condition_name",
+                    "fee", "source", "fetched_at",
+                    "fee_text", "discount_fee", "discount_fee_text",
+                ],
+            )
+            # The seeded rows survived the rebuild.
+            industry_row = conn.execute(
+                """SELECT fund_code, report_period, industry_name,
+                          net_value_ratio, market_value, source
+                   FROM industry_allocations WHERE fund_code = ?""",
+                ("110022",),
+            ).fetchone()
+            self.assertEqual(industry_row[0], "110022")
+            self.assertEqual(industry_row[1], "2024Q4")
+            self.assertEqual(industry_row[2], "制造业")
+            self.assertAlmostEqual(industry_row[3], 0.8321)
+            self.assertAlmostEqual(industry_row[4], 12345.67)
+            self.assertEqual(industry_row[5], "v4-drift")
+
+            fee_row = conn.execute(
+                """SELECT fund_code, fee_type, condition_name, fee,
+                          fee_text, discount_fee, discount_fee_text, source
+                   FROM fee_structures WHERE fund_code = ?""",
+                ("110022",),
+            ).fetchone()
+            self.assertEqual(fee_row[0], "110022")
+            self.assertEqual(fee_row[1], "申购费率")
+            self.assertEqual(fee_row[2], "小于100万元")
+            self.assertAlmostEqual(fee_row[3], 0.15)
+            self.assertEqual(fee_row[4], "0.15%")
+            self.assertAlmostEqual(fee_row[5], 0.10)
+            self.assertEqual(fee_row[6], "0.10%")
+            self.assertEqual(fee_row[7], "v4-drift")
+
+    def test_v5_migration_refuses_when_column_set_differs(self) -> None:
+        """Defensive: if a DB's column set for one of the affected
+        tables has drifted beyond reordering (a column was added
+        or removed out of band), v5 must raise rather than
+        silently dropping/adding columns. Otherwise a half-broken
+        migration could be worse than the original schema drift."""
+        fund_data.FundDataStore(str(self.db)).ensure_schema()
+        with sqlite3.connect(str(self.db)) as conn:
+            conn.execute("DELETE FROM schema_migrations WHERE version >= 5")
+            conn.execute("PRAGMA user_version = 4")
+            # Add a column that the canonical schema does not have.
+            conn.execute("ALTER TABLE industry_allocations ADD COLUMN rogue TEXT")
+            conn.commit()
+
+        with self.assertRaises(RuntimeError) as ctx:
+            fund_data.FundDataStore(str(self.db)).ensure_schema()
+        self.assertIn("industry_allocations", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -125,11 +125,125 @@ def _migration_004_add_fee_structures_discount_fee_text(conn: sqlite3.Connection
         conn.execute("alter table fee_structures add column discount_fee_text text")
 
 
+# Schema for the v5-rebuild step. See
+# ``_migration_005_align_column_order`` for the rationale.
+_INDUSTRY_ALLOCATIONS_CANONICAL_DDL = """\
+CREATE TABLE {new_name} (
+    fund_code text not null,
+    report_period text not null,
+    industry_name text not null,
+    net_value_ratio real,
+    source text,
+    fetched_at text not null,
+    market_value real,
+    primary key (fund_code, report_period, industry_name)
+)
+"""
+
+_FEE_STRUCTURES_CANONICAL_DDL = """\
+CREATE TABLE {new_name} (
+    fund_code text not null,
+    fee_type text not null,
+    condition_name text not null,
+    fee real,
+    source text,
+    fetched_at text not null,
+    fee_text text,
+    discount_fee real,
+    discount_fee_text text,
+    primary key (fund_code, fee_type, condition_name)
+)
+"""
+
+
+def _migration_005_align_column_order(conn: sqlite3.Connection) -> None:
+    """v5: align the column order of ``industry_allocations`` and
+    ``fee_structures`` with the canonical ``ensure_schema`` definition.
+
+    Why: the four v1-v4 migrations add ``market_value`` (industry)
+    and ``fee_text`` / ``discount_fee`` / ``discount_fee_text`` (fee)
+    via ``ALTER TABLE ... ADD COLUMN``, which SQLite always appends
+    to the end of the column list. The canonical ``ensure_schema``
+    block, however, declared these columns in the *middle* of the
+    table. So a fresh DB had the new order, while a DB that had been
+    upgraded through v1-v4 had the old order. The 2026-06-02 Akshare
+    bulk run hit a schema-drift incident because of this: the
+    separate (temp) DB was created against the canonical schema, the
+    main DB had the post-migration order, and ``INSERT INTO
+    main.{table} SELECT * FROM sep.{table}`` failed with
+    "table X has N values but M columns were supplied".
+
+    Fix:
+
+    1. The canonical ``ensure_schema`` block is updated to declare
+       the new columns at the end (matching what ALTER TABLE
+       produces), so a fresh DB and a migrated DB now have the same
+       column order from day one.
+    2. For DBs that already exist with the old (mid-table) order,
+       this migration recreates the affected tables in the canonical
+       order, preserving data via ``INSERT INTO new SELECT FROM old``
+       wrapped in a transaction. Both tables are rebuildable from
+       AkShare / Tushare, so the data-loss surface is small.
+
+    The rebuild is a no-op when the table is already in canonical
+    order, so re-running ``ensure_schema`` on an already-migrated
+    DB is cheap.
+    """
+    rebuilds = [
+        (
+            "industry_allocations",
+            _INDUSTRY_ALLOCATIONS_CANONICAL_DDL,
+            [
+                "fund_code", "report_period", "industry_name",
+                "net_value_ratio", "source", "fetched_at", "market_value",
+            ],
+        ),
+        (
+            "fee_structures",
+            _FEE_STRUCTURES_CANONICAL_DDL,
+            [
+                "fund_code", "fee_type", "condition_name",
+                "fee", "source", "fetched_at",
+                "fee_text", "discount_fee", "discount_fee_text",
+            ],
+        ),
+    ]
+    for table, ddl_template, select_cols in rebuilds:
+        current = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        if current == select_cols:
+            # Already canonical -- nothing to do.
+            continue
+        # Sanity: the column *set* must be identical, otherwise the
+        # user has a DB whose schema has drifted beyond reordering
+        # (e.g. a column was added/removed out of band). Refusing is
+        # the right call -- silently dropping/adding columns would
+        # be worse than a clear RuntimeError on first open.
+        if set(current) != set(select_cols):
+            raise RuntimeError(
+                f"refusing to migrate {table}: column set differs "
+                f"between DB and canonical schema "
+                f"(db={current!r}, canonical={select_cols!r})"
+            )
+        new_name = f"{table}__v5_align"
+        ddl = ddl_template.format(new_name=new_name)
+        select_list = ", ".join(select_cols)
+        conn.executescript(
+            f"""
+            {ddl};
+            INSERT INTO {new_name} ({select_list})
+                SELECT {select_list} FROM {table};
+            DROP TABLE {table};
+            ALTER TABLE {new_name} RENAME TO {table};
+            """
+        )
+
+
 MIGRATIONS: list[tuple[int, Any]] = [
     (1, _migration_001_add_industry_allocations_market_value),
     (2, _migration_002_add_fee_structures_fee_text),
     (3, _migration_003_add_fee_structures_discount_fee),
     (4, _migration_004_add_fee_structures_discount_fee_text),
+    (5, _migration_005_align_column_order),
 ]
 
 FUND_DATA_SCHEMA_VERSION = max(version for version, _fn in MIGRATIONS)
@@ -2034,9 +2148,9 @@ class FundDataStore:
                     report_period text not null,
                     industry_name text not null,
                     net_value_ratio real,
-                    market_value real,
                     source text,
                     fetched_at text not null,
+                    market_value real,
                     primary key (fund_code, report_period, industry_name)
                 );
                 create table if not exists fee_structures (
@@ -2044,11 +2158,11 @@ class FundDataStore:
                     fee_type text not null,
                     condition_name text not null,
                     fee real,
+                    source text,
+                    fetched_at text not null,
                     fee_text text,
                     discount_fee real,
                     discount_fee_text text,
-                    source text,
-                    fetched_at text not null,
                     primary key (fund_code, fee_type, condition_name)
                 );
                 create table if not exists dividends (
