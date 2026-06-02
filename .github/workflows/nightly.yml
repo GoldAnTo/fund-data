@@ -100,13 +100,31 @@ jobs:
         # something to operate on. Pin the cache dir to
         # /tmp/nightly-cache so the gate step can resolve it
         # via FUND_DATA_CACHE_DIR.
+        #
+        # Retry up to 3 times: the OSS bucket occasionally
+        # returns a 404 on the first GET of
+        # current/manifest.json even though `curl` against the
+        # same URL succeeds a second later. Transient edge-case
+        # rather than a real outage; a 5s sleep + retry is
+        # cheaper than debugging the bucket.
         env:
           FUND_DATA_CACHE_DIR: /tmp/nightly-cache
         run: |
           mkdir -p "$FUND_DATA_CACHE_DIR"
-          python fund-data/scripts/fund_cli.py cloud pull \
-            --cache-dir "$FUND_DATA_CACHE_DIR" \
-            --output /tmp/nightly-artifacts/cloud-pull-init.json
+          for attempt in 1 2 3; do
+            if python fund-data/scripts/fund_cli.py cloud pull \
+                --cache-dir "$FUND_DATA_CACHE_DIR" \
+                --output /tmp/nightly-artifacts/cloud-pull-init.json; then
+              echo "cloud pull ok on attempt $attempt"
+              break
+            fi
+            echo "cloud pull failed on attempt $attempt, sleeping 5s..."
+            sleep 5
+            if [ "$attempt" = "3" ]; then
+              echo "cloud pull failed after 3 attempts"
+              exit 1
+            fi
+          done
           # Debug: confirm the pull landed a db and the
           # current.json pointer was updated.
           echo "--- $FUND_DATA_CACHE_DIR ---"

@@ -168,6 +168,12 @@ def _looks_transient(stderr: str, stdout: str) -> bool:
         "temporarily unavailable",
         "eof occurred",
         "rate limit",
+        # OSS object propagation can take a few seconds; an
+        # immediate-after-upload GET on the manifest URL can
+        # 404 even though the upload itself succeeded. Pull
+        # again and the second GET usually lands.
+        "http error 404",
+        "not found",
     )
     return any(marker in haystack for marker in transient_markers)
 
