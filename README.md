@@ -208,13 +208,23 @@ ossutil cp dist/fund-data/full/$VERSION/manifest.json \
 ## Tests
 
 ```bash
+# From the repo root — picks up all 178 tests across the skill:
+./run_tests.sh
+
+# Or directly, with PYTHONPATH so test files resolve `from scripts
+# import fund_data` from any cwd:
+PYTHONPATH=fund-data python3 -m unittest discover \
+  -s fund-data/scripts/tests -t . -p 'test_*.py'
+
+# Legacy: from inside `fund-data/`, the original incantation still
+# works once you add the explicit `-s scripts/tests -t .`:
 cd fund-data
-python3 -m unittest discover scripts/tests
+python3 -m unittest discover scripts/tests -s scripts/tests -t .
 ```
 
 The test suite uses static Eastmoney / AkShare / Investoday / Tushare
-fixtures — no network required. The same command runs in CI on Python
-3.11, 3.12, and 3.13.
+fixtures — no network required. The same fixtures are exercised in CI
+on Python 3.11, 3.12, and 3.13.
 
 ## Project layout
 
