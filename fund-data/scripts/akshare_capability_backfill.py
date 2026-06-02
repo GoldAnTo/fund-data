@@ -192,8 +192,33 @@ def _merge_separate_db(separate_db: Path, main_db: Path) -> dict[str, int]:
                         f"DELETE FROM main.{table} WHERE fund_code IN ({placeholders})",
                         sep_codes,
                     )
-                # 3) Copy fresh rows from sep into main.
-                cur = main_conn.execute(f"INSERT INTO main.{table} SELECT * FROM sep.{table}")
+                # 3) Copy fresh rows from sep into main. We use an
+                #    explicit column list derived from main's schema
+                #    rather than ``SELECT *`` so a column-order or
+                #    extra-column drift between sep and main does
+                #    not abort the merge. This is the same defence
+                #    we had to apply by hand for ``industry_allocations``
+                #    and ``fee_structures`` during the 2026-06-02
+                #    schema-drift incident -- generalising it here
+                #    means the next drift does not need a hotfix.
+                main_cols = [
+                    row[1]
+                    for row in main_conn.execute(
+                        f"PRAGMA main.table_info({table})"
+                    ).fetchall()
+                ]
+                if not main_cols:
+                    # Table is absent from main's schema (caller
+                    # forgot to run ensure_schema, or this is a
+                    # partial migration). Skip rather than fail the
+                    # whole merge; the rowcount surfaces as 0.
+                    counts[table] = 0
+                    continue
+                column_list = ", ".join(main_cols)
+                cur = main_conn.execute(
+                    f"INSERT INTO main.{table} ({column_list})"
+                    f" SELECT {column_list} FROM sep.{table}"
+                )
                 counts[table] = cur.rowcount
             main_conn.execute("COMMIT")
         except Exception:
