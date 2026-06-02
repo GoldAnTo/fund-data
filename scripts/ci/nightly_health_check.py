@@ -383,9 +383,10 @@ def main(argv: list[str] | None = None) -> int:
     # require importing fund_data earlier, which pulls in
     # optional runtime deps.
     if args.db is None:
-        import sys
-        sys.path.insert(0, str(SCRIPT_DIR.parent.parent / "fund-data"))
-        import fund_data
+        # `fund-data/scripts/fund_data.py` is the actual module;
+        # the package name is `scripts`. Matches the convention
+        # used everywhere else in the codebase.
+        from scripts import fund_data
         args.db = str(fund_data.default_db_path())
 
     summary = run_gate(
