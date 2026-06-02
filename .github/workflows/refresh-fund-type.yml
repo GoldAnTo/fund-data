@@ -1,0 +1,129 @@
+name: refresh-fund-type
+
+# Standalone nightly that backfills ``funds.fund_type`` from
+# the Eastmoney ``fundcode_search.js`` index.
+#
+# Why this is a separate workflow (and not a fifth step on
+# ``nightly-data-plane-gate``):
+#
+# 1. The 0.2.x docs (AGENTS.md "Operational checklist",
+#    ``docs/nightly-ci-design.md``) pin the gate as a four-step
+#    canary. Adding ``refresh_fund_type`` to the gate turns
+#    every "the fund_type pass had a transient" into a
+#    canary failure -- which it is not. Keeping the gate
+#    "is the bundle healthy?" and this workflow "is the
+#    coverage drift bounded?" preserves the discipline.
+# 2. The 30-minute offset (04:00 Asia/Shanghai, after the
+#    gate's 03:00) means the gate has already published
+#    the morning's bundle. ``refresh_fund_type`` then
+#    operates on the just-published DB (or on the same
+#    cloud pull, since both target the same bucket).
+# 3. ``fund-data/AGENTS.md`` notes that the
+#    ``fundcode_search`` endpoint occasionally returns
+#    a partial list (e.g. right after Eastmoney's
+#    weekday-morning list rebuild). Skipping a night on
+#    a transient here is much cheaper than a failing
+#    canary that wakes the on-call human.
+#
+# Schedule: 04:00 Asia/Shanghai (20:00 UTC). The workflow
+# runs ``cloud pull`` first (the same pattern as the
+# gate) so the runner has a ``fund_data.sqlite`` to write
+# into. ``refresh_fund_type`` itself uses
+# ``default_db_path()`` (which honours ``FUND_DATA_CACHE_DIR``).
+
+on:
+  schedule:
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: refresh-fund-type
+  # In-progress runs finish before a new trigger starts.
+  # The pass is short (Eastmoney fundcode_search is one
+  # HTTP GET + bulk UPDATE) so a 2nd-day defer is fine.
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: install-runtime-deps
+        run: |
+          python -m pip install -q -r requirements.txt
+
+      - name: pull-query-db
+        # Same retry pattern as nightly.yml: the OSS bucket
+        # occasionally 404s the first GET of
+        # current/manifest.json even though a follow-up
+        # `curl` succeeds. A 5s sleep + retry is cheaper
+        # than debugging the bucket.
+        env:
+          FUND_DATA_CACHE_DIR: /tmp/refresh-cache
+        run: |
+          mkdir -p "$FUND_DATA_CACHE_DIR"
+          for attempt in 1 2 3; do
+            if python fund-data/scripts/fund_cli.py cloud pull \
+                --cache-dir "$FUND_DATA_CACHE_DIR" \
+                --output /tmp/refresh-artifacts/cloud-pull.json; then
+              echo "cloud pull ok on attempt $attempt"
+              break
+            fi
+            echo "cloud pull failed on attempt $attempt, sleeping 5s..."
+            sleep 5
+            if [ "$attempt" = "3" ]; then
+              echo "cloud pull failed after 3 attempts"
+              exit 1
+            fi
+          done
+          ls -la "$FUND_DATA_CACHE_DIR"
+          cat "$FUND_DATA_CACHE_DIR/current.json" 2>/dev/null || echo "(no current.json)"
+
+      - name: refresh-fund-type
+        # refresh_fund_type.py is idempotent (only-empty by
+        # default) so a re-run is safe. The --db is implicit
+        # via default_db_path() (which honours
+        # FUND_DATA_CACHE_DIR above). PYTHONPATH=fund-data
+        # lets `import fund_data` resolve the package. The
+        # script writes its DONE / FALLBACK summary to the
+        # log; we capture the log as the success artifact
+        # because refresh_fund_type.py does not expose a
+        # --output flag (a JSON envelope would require
+        # touching the script -- out of scope here).
+        env:
+          FUND_DATA_CACHE_DIR: /tmp/refresh-cache
+          PYTHONPATH: fund-data:$PYTHONPATH
+        run: |
+          set -o pipefail
+          mkdir -p /tmp/refresh-artifacts
+          python fund-data/scripts/refresh_fund_type.py \
+            --only-empty \
+            2>&1 | tee /tmp/refresh-artifacts/refresh.log
+          rc=$?
+          echo "exit_code=$rc"
+          exit $rc
+
+      - name: upload-artifacts-on-failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refresh-fund-type-failure-${{ github.run_id }}
+          path: /tmp/refresh-artifacts/
+          retention-days: 30
+
+      - name: upload-artifacts-on-success
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refresh-fund-type-success-${{ github.run_id }}
+          path: /tmp/refresh-artifacts/refresh.log
+          retention-days: 7
