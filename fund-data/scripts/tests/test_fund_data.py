@@ -436,6 +436,65 @@ class FundDataProviderTests(unittest.TestCase):
         self.assertEqual(split_rows[0]["split_date"], "2019-01-10")
         self.assertEqual(manager_rows[0]["manager_name"], "萧楠")
 
+    def test_akshare_snapshot_reuses_profile_and_holdings(self):
+        """Eastmoney snapshot is empty for back-end share classes
+        (000002/000012/...). The AkShare fallback must still return
+        a parse_snapshot-shaped dict so upsert_snapshot can store it
+        and the fund exits the sync_failures backlog."""
+
+        class FakeAkshare:
+            @staticmethod
+            def fund_overview_em(symbol):
+                return SimpleFrame(PROFILE_ROWS)
+
+            @staticmethod
+            def fund_portfolio_hold_em(symbol, date):
+                return SimpleFrame(
+                    [
+                        {
+                            "序号": 1,
+                            "股票代码": "600519",
+                            "股票名称": "贵州茅台",
+                            "占净值比例": 9.83,
+                            "持股数": 12.34,
+                            "持仓市值": 56789.0,
+                            "季度": "2024年4季度股票投资明细",
+                        }
+                    ]
+                )
+
+        provider = fund_data.AkshareProvider(ak_module=FakeAkshare())
+        snapshot = provider.snapshot("000002")
+
+        self.assertEqual(snapshot["fund_code"], "000002")
+        self.assertEqual(snapshot["fund_name"], "易方达消费行业股票")
+        self.assertEqual(snapshot["stock_codes"], ["600519"])
+        # AkShare does not expose rate fields; they should land as
+        # None / empty so the dict still matches parse_snapshot shape.
+        self.assertIsNone(snapshot["source_rate"])
+        self.assertIsNone(snapshot["current_rate"])
+        self.assertIsNone(snapshot["min_purchase"])
+        self.assertEqual(snapshot["returns"], {})
+        self.assertIn("akshare", snapshot["source"])
+
+    def test_akshare_snapshot_returns_empty_dict_on_failure(self):
+        """If the underlying profile / holdings call raises, snapshot
+        must return {} (not raise) so the provider chain can fall
+        through and the caller can still see 'no snapshot' instead
+        of a 500."""
+
+        class FakeAkshare:
+            @staticmethod
+            def fund_overview_em(symbol):
+                raise KeyError("基金简称 missing from wide overview")
+
+            @staticmethod
+            def fund_portfolio_hold_em(symbol, date):
+                return SimpleFrame([])
+
+        provider = fund_data.AkshareProvider(ak_module=FakeAkshare())
+        self.assertEqual(provider.snapshot("000002"), {})
+
     def test_bond_holdings_accepts_alternate_ratio_and_market_value_keys(self):
         class FakeAkshare:
             @staticmethod
