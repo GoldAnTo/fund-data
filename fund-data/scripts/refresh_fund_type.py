@@ -20,9 +20,11 @@ parse it, and update ``funds.fund_type`` via direct SQL — bypassing
 ``company`` / ``manager`` / ``fund_name`` columns that the AkShare
 provider populates with non-empty values from its own row source.
 
-The script is idempotent: it overwrites ``fund_type`` for every
-fund_code that appears in the fresh index, leaves other columns
-untouched, and writes a ``sync_runs`` audit row.
+For the small tail (18 funds in the 2026-06-02 baseline) where
+Eastmoney itself returns an empty fund_type but the row has a real
+``fund_name`` we can read, a regex fallback infers the type from
+the name. Both passes are idempotent: each writes a ``sync_runs``
+audit row.
 
 Typical use::
 
@@ -34,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sqlite3
 import sys
 from datetime import UTC, datetime
@@ -61,13 +64,51 @@ def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _apply(
-    db_path: Path,
-    rows: list[dict],
-    *,
-    only_empty: bool,
-    dry_run: bool,
-) -> dict[str, int]:
+# Regex fallback for the 18 funds whose Eastmoney fundcode_search
+# row carries an empty fund_type but a real fund_name. Order
+# matters: more specific patterns first so ``(FOF)`` and ``(QDII)``
+# win over the bare ``混合`` / ``ETF`` matches in the same name.
+#
+# The canonical fund_type values follow the ``<category>-<sub>``
+# pattern (see the 2026-06-02 coverage report). We pick the most
+# common subcategory for each keyword so the inferred type is
+# usable for ``fund_type``-based filters without a follow-up
+# refresh.
+_NAME_TYPE_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"FOF"), "FOF-稳健型"),
+    (re.compile(r"QDII"), "QDII-混合偏股"),
+    (re.compile(r"ETF"), "指数型-股票"),
+    # 纯债 / 定开债 / 持有期债券 are all "long-only" bond funds;
+    # 债券型-长债 is the most common subcategory on Eastmoney.
+    (re.compile(r"(?:纯债|定开债|持有期债券)"), "债券型-长债"),
+    (re.compile(r"债券"), "债券型-长债"),
+    (re.compile(r"混合"), "混合型-灵活"),
+    (re.compile(r"货币"), "货币型-普通货币"),
+    (re.compile(r"股票"), "股票型"),
+]
+
+
+def infer_fund_type_from_name(name: str) -> str:
+    """Best-effort fund_type guess from a Chinese fund name.
+
+    Used as a regex fallback for the 18 funds whose Eastmoney
+    fundcode_search.js row carries an empty fund_type (typically
+    recently-launched or 发起式 funds that Eastmoney has not
+    classified yet). The canonical fund_type values follow the
+    ``<category>-<sub>`` pattern (e.g. ``指数型-股票``,
+    ``债券型-长债``), and the fund_name carries the same
+    vocabulary, so a keyword match produces a usable value
+    without any further lookups.
+
+    Returns an empty string if no pattern matches -- callers
+    should treat that as "leave the existing fund_type alone".
+    """
+    if not name:
+        return ""
+    for pattern, fund_type in _NAME_TYPE_PATTERNS:
+        if pattern.search(name):
+            return fund_type
+    return ""
     """Update ``funds.fund_type`` for every ``fund_code`` in ``rows``.
 
     ``only_empty=True`` (the default) skips rows that already have a
@@ -146,6 +187,86 @@ def _apply(
     }
 
 
+def _apply_name_fallback(
+    db_path: Path,
+    *,
+    dry_run: bool,
+) -> dict[str, int]:
+    """Run :func:`infer_fund_type_from_name` over every row whose
+    ``fund_type`` is still empty after the Eastmoney refresh and
+    that has a real ``fund_name`` (not the placeholder
+    ``fund_code`` value some back-end share classes carry).
+
+    The 2026-06-02 baseline had 18 funds in this bucket -- the
+    Eastmoney ``fundcode_search.js`` row exists but its
+    ``fund_type`` slot is blank, and the 190 back-end share
+    classes that carry an empty fund_name as well are silently
+    skipped (``no_name`` counter).
+
+    Each successful inference is a single ``UPDATE funds`` with
+    the same bypass-the-upsert rationale as :func:`_apply`: we
+    do not want to clobber the company / manager / fund_name
+    columns that AkShare populated. The whole pass is wrapped
+    in a single transaction so a mid-loop crash rolls back to
+    the pre-pass state.
+    """
+    updated = 0
+    skipped = 0
+    no_name = 0
+    with sqlite3.connect(db_path, timeout=30) as conn:
+        if not dry_run:
+            conn.execute("BEGIN")
+        try:
+            rows = conn.execute(
+                "SELECT fund_code, fund_name, fund_type FROM funds "
+                "WHERE fund_type = '' OR fund_type IS NULL"
+            ).fetchall()
+            for fund_code, fund_name, _existing in rows:
+                if not fund_name or fund_name == fund_code:
+                    # The back-end share classes live here -- their
+                    # fund_name is just the fund_code, so the
+                    # regex has nothing to work with.
+                    no_name += 1
+                    continue
+                new_type = infer_fund_type_from_name(fund_name)
+                if not new_type:
+                    skipped += 1
+                    continue
+                if not dry_run:
+                    conn.execute(
+                        "UPDATE funds SET fund_type = ?, updated_at = ? "
+                        "WHERE fund_code = ?",
+                        (new_type, _utc_now(), fund_code),
+                    )
+                updated += 1
+            if not dry_run:
+                conn.execute(
+                    "INSERT INTO sync_runs(operation, status, rows_changed, "
+                    "started_at, finished_at, message) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        "refresh_fund_type.name_fallback",
+                        "ok",
+                        updated,
+                        _utc_now(),
+                        _utc_now(),
+                        json.dumps(
+                            {
+                                "no_name": no_name,
+                                "skipped": skipped,
+                                "dry_run": dry_run,
+                            }
+                        ),
+                    )
+                )
+                conn.execute("COMMIT")
+        except Exception:
+            if not dry_run:
+                conn.execute("ROLLBACK")
+            raise
+    return {"updated": updated, "skipped": skipped, "no_name": no_name}
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=str(DEFAULT_DB_PATH), help="SQLite path")
@@ -171,6 +292,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=None,
         help="Use a cached fundcode_search.js instead of downloading",
+    )
+    parser.add_argument(
+        "--no-fallback-name-regex",
+        dest="fallback_name_regex",
+        action="store_false",
+        default=True,
+        help="Skip the regex-on-fund_name fallback pass (default: enabled)",
     )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args(argv)
@@ -203,6 +331,15 @@ def main(argv: list[str] | None = None) -> int:
         stats["bad_type_skipped"],
         args.dry_run,
     )
+    if args.fallback_name_regex:
+        fb_stats = _apply_name_fallback(db_path, dry_run=args.dry_run)
+        logger.info(
+            "FALLBACK updated=%d skipped=%d no_name=%d dry_run=%s",
+            fb_stats["updated"],
+            fb_stats["skipped"],
+            fb_stats["no_name"],
+            args.dry_run,
+        )
     return 0
 
 
