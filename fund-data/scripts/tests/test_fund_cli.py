@@ -177,6 +177,39 @@ class FundCliTests(unittest.TestCase):
             self.assertFalse(payload["installed"])
             self.assertEqual(payload["cache_dir"], str(Path(tmpdir) / "cache"))
 
+    def test_cloud_archive_full_command_creates_private_archive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "source.sqlite"
+            output_dir = Path(tmpdir) / "archive"
+            script = (
+                "import sys;"
+                f"sys.path.insert(0, {str(SCRIPT_DIR)!r});"
+                "import fund_data;"
+                f"s=fund_data.FundDataStore({str(db_path)!r});"
+                "s.upsert_funds([{'fund_code':'110022','fund_name':'易方达消费行业','source':'test'}]);"
+                "s.record_raw_response('test.raw','110022','raw')"
+            )
+            subprocess.run([sys.executable, "-c", script], check=True)
+
+            result = self.run_cli(
+                "cloud",
+                "archive-full",
+                "--source-db",
+                str(db_path),
+                "--output-dir",
+                str(output_dir),
+                "--base-url",
+                "oss://fund-data-private/fund-data/full/2026-06-01/",
+                "--version",
+                "2026-06-01",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["manifest"]["kind"], "fund-data-full-archive")
+            self.assertEqual(payload["manifest"]["tables"]["raw_responses"], 1)
+            self.assertTrue((output_dir / "fund_data_full.sqlite.gz").is_file())
+
     def test_console_script_entrypoint_imports_from_installed_package(self):
         repo_root = SCRIPT_DIR.parents[1]
         with tempfile.TemporaryDirectory() as tmpdir:

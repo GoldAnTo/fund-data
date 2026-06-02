@@ -276,6 +276,21 @@ Set `FUND_DATA_CACHE_DIR` to move that cache, or `FUND_DATA_DB` to force
 a specific SQLite file. MCP clients can call `fund_cloud_status` before
 querying to check installed and remote versions.
 
+For private full-database backup, archive the complete SQLite separately:
+
+```bash
+VERSION=$(date +%F-%H%M%S)
+python3 scripts/fund_cli.py cloud archive-full \
+  --source-db data/fund_data.sqlite \
+  --output-dir ../dist/fund-data/full/$VERSION \
+  --base-url oss://YOUR_PRIVATE_BUCKET/fund-data/full/$VERSION/ \
+  --version $VERSION
+```
+
+Full archives include `raw_responses`, sync logs, and failure queues.
+Keep them in a private bucket or private object prefix; do not publish
+them through the public query-bundle URL.
+
 ## Nightly Data-Plane Health Gate
 
 A GitHub Actions cron workflow (`.github/workflows/nightly.yml`)

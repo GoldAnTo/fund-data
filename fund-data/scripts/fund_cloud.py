@@ -19,6 +19,8 @@ from urllib.request import Request, urlopen
 SCHEMA_VERSION = 1
 QUERY_DB_NAME = "fund_data_query.sqlite"
 QUERY_ARCHIVE_NAME = f"{QUERY_DB_NAME}.gz"
+FULL_DB_NAME = "fund_data_full.sqlite"
+FULL_ARCHIVE_NAME = f"{FULL_DB_NAME}.gz"
 MANIFEST_NAME = "manifest.json"
 CURRENT_METADATA_NAME = "current.json"
 
@@ -103,7 +105,7 @@ def build_bundle(
         "files": {
             "query_db": {
                 "path": QUERY_ARCHIVE_NAME,
-                "url": urljoin(base, QUERY_ARCHIVE_NAME),
+                "url": _join_location(base, QUERY_ARCHIVE_NAME),
                 "sha256": digest,
                 "size_bytes": archive_path.stat().st_size,
                 "uncompressed_size_bytes": query_db_path.stat().st_size,
@@ -123,6 +125,74 @@ def build_bundle(
         "manifest_path": manifest_path,
         "query_db_path": query_db_path,
         "query_archive_path": archive_path,
+        "sha256_path": sha_path,
+    }
+
+
+def archive_full(
+    *,
+    source_db: str | Path,
+    output_dir: str | Path,
+    base_url: str | None = None,
+    version: str | None = None,
+    manifest_output: str | Path | None = None,
+) -> dict[str, Any]:
+    source_path = Path(source_db)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"source database does not exist: {source_path}")
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    full_db_path = output_path / FULL_DB_NAME
+    archive_path = output_path / FULL_ARCHIVE_NAME
+    sha_path = output_path / f"{FULL_ARCHIVE_NAME}.sha256"
+    manifest_path = Path(manifest_output) if manifest_output else output_path / MANIFEST_NAME
+
+    for artifact in (full_db_path, archive_path, sha_path):
+        if artifact.exists():
+            artifact.unlink()
+
+    _copy_sqlite_snapshot(source_path, full_db_path)
+    table_counts = _table_counts(full_db_path)
+    _gzip_file(full_db_path, archive_path)
+    digest = _sha256_file(archive_path)
+    sha_path.write_text(f"{digest}  {FULL_ARCHIVE_NAME}\n", encoding="utf-8")
+
+    file_entry: dict[str, Any] = {
+        "path": FULL_ARCHIVE_NAME,
+        "url": None,
+        "oss_uri": None,
+        "sha256": digest,
+        "size_bytes": archive_path.stat().st_size,
+        "uncompressed_size_bytes": full_db_path.stat().st_size,
+        "compression": "gzip",
+    }
+    if base_url:
+        base = base_url.rstrip("/") + "/"
+        if base.startswith("oss://"):
+            file_entry["oss_uri"] = _join_location(base, FULL_ARCHIVE_NAME)
+        else:
+            file_entry["url"] = _join_location(base, FULL_ARCHIVE_NAME)
+
+    manifest = {
+        "kind": "fund-data-full-archive",
+        "version": version or datetime.now(UTC).strftime("%Y-%m-%d"),
+        "schema_version": SCHEMA_VERSION,
+        "updated_at": utc_now(),
+        "files": {"full_db": file_entry},
+        "tables": table_counts,
+        "privacy": "private",
+    }
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+
+    return {
+        "manifest": manifest,
+        "manifest_path": manifest_path,
+        "full_db_path": full_db_path,
+        "full_archive_path": archive_path,
         "sha256_path": sha_path,
     }
 
@@ -262,6 +332,32 @@ def _build_query_database(source_db: Path, query_db: Path) -> dict[str, int]:
     return copied
 
 
+def _copy_sqlite_snapshot(source_db: Path, dst_db: Path) -> None:
+    dst_db.parent.mkdir(parents=True, exist_ok=True)
+    if dst_db.exists():
+        dst_db.unlink()
+    source_uri = f"file:{source_db}?mode=ro"
+    with (
+        closing(sqlite3.connect(source_uri, uri=True, timeout=30.0)) as source,
+        closing(sqlite3.connect(dst_db, timeout=30.0)) as target,
+    ):
+        source.backup(target)
+
+
+def _table_counts(db_path: Path) -> dict[str, int]:
+    with closing(sqlite3.connect(db_path)) as conn:
+        tables = [
+            row[0]
+            for row in conn.execute(
+                "select name from sqlite_master where type = 'table' and name not like 'sqlite_%'"
+            ).fetchall()
+        ]
+        return {
+            table: conn.execute(f"select count(*) from {_quote_identifier(table)}").fetchone()[0]
+            for table in sorted(tables)
+        }
+
+
 def _create_query_indexes(conn: sqlite3.Connection, table_names: Any) -> None:
     tables = set(table_names)
     if "funds" in tables:
@@ -349,6 +445,12 @@ def _manifest_base_url(manifest_url: str) -> str:
     if parsed.scheme:
         return manifest_url.rsplit("/", 1)[0] + "/"
     return str(Path(manifest_url).resolve().parent.as_uri()) + "/"
+
+
+def _join_location(base: str, name: str) -> str:
+    if base.startswith("oss://"):
+        return base.rstrip("/") + "/" + name.lstrip("/")
+    return urljoin(base.rstrip("/") + "/", name.lstrip("/"))
 
 
 def _sha256_file(path: Path) -> str:
