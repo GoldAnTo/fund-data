@@ -235,6 +235,76 @@ class SeparateDbMergeTests(unittest.TestCase):
             self.assertEqual(n, 0)
             main_conn.close()
 
+    def test_merge_survives_sep_table_with_extra_column(self) -> None:
+        """Regression guard for the 2026-06-02 schema-drift incident:
+        if the separate DB was created against a slightly newer
+        schema than the main DB (e.g. an extra trailing column),
+        ``SELECT *`` would produce a different column count and
+        the merge would abort with "table ... has X columns but
+        Y values were supplied". The fix derives the column list
+        from main's schema and uses it on both sides, so a
+        sep-side extra column is silently dropped and the merge
+        still lands the data."""
+        with tempfile_TempDir() as tmp:
+            main_db = Path(tmp) / "main.sqlite"
+            sep_db = Path(tmp) / "sep.sqlite"
+            _make_main_db(main_db, ["110022"], pre_existing_stock_holding=False)
+            _make_separate_db(sep_db)
+
+            # Simulate "sep was created against a slightly newer
+            # schema": add a trailing column sep does not have.
+            sep_conn = sqlite3.connect(str(sep_db))
+            sep_conn.execute("ALTER TABLE stock_holdings ADD COLUMN extra_meta TEXT")
+            sep_conn.execute(
+                """INSERT INTO stock_holdings
+                      (fund_code, report_period, stock_code, stock_name,
+                       net_value_ratio, shares, market_value, source,
+                       fetched_at, extra_meta)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "110022", "2024Q4", "600519", "贵州茅台",
+                    0.123, 12, 56789, "fresh",
+                    "2025-01-01T00:00:00+00:00", "meta-payload",
+                ),
+            )
+            sep_conn.commit()
+            sep_conn.close()
+
+            counts = akshare_capability_backfill._merge_separate_db(sep_db, main_db)
+            self.assertEqual(counts["stock_holdings"], 1)
+
+            main_conn = sqlite3.connect(str(main_db))
+            row = main_conn.execute(
+                "SELECT stock_name, source FROM stock_holdings WHERE fund_code = ?",
+                ("110022",),
+            ).fetchone()
+            self.assertEqual(row[0], "贵州茅台")
+            self.assertEqual(row[1], "fresh")
+            main_conn.close()
+
+    def test_merge_handles_missing_target_table_gracefully(self) -> None:
+        """If the main DB is missing a table from MERGE_TABLES (caller
+        forgot to run ensure_schema, or a partial migration dropped
+        one), the merge should record a 0 rowcount for that table
+        and keep going on the others -- not abort the whole batch."""
+        with tempfile_TempDir() as tmp:
+            main_db = Path(tmp) / "main.sqlite"
+            sep_db = Path(tmp) / "sep.sqlite"
+            _make_main_db(main_db, ["110022"], pre_existing_stock_holding=False)
+            _make_separate_db(sep_db)
+
+            # Drop a capability table from main so PRAGMA returns
+            # zero columns for it.
+            main_conn = sqlite3.connect(str(main_db))
+            main_conn.execute("DROP TABLE fee_structures")
+            main_conn.commit()
+            main_conn.close()
+
+            counts = akshare_capability_backfill._merge_separate_db(sep_db, main_db)
+            self.assertEqual(counts["fee_structures"], 0)
+            # Other tables still get merged -- we do not abort.
+            self.assertIn("stock_holdings", counts)
+
 
 # --- helpers (kept here so the test file is self-contained) -------------
 
