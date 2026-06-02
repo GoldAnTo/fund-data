@@ -52,16 +52,17 @@ For OpenClaw, Codex, Claude, or any MCP-capable agent, prefer a
 lightweight skill install plus a cloud data cache:
 
 ```bash
-python3 scripts/fund_cli.py cloud pull \
-  --manifest-url https://YOUR_BUCKET.oss-cn-hangzhou.aliyuncs.com/fund-data/current/manifest.json
+python3 scripts/fund_cli.py cloud pull
 python3 scripts/fund_cli.py cloud status
 ```
 
 `cloud pull` downloads `fund_data_query.sqlite.gz`, verifies its
 SHA-256 from `manifest.json`, and installs it under
-`~/.cache/fund-data/releases/<version>/`. When `FUND_DATA_DB` is not
-set, `fund_data` and `fund_mcp.py` automatically prefer that cached
-query database over the bundled `data/fund_data.sqlite`.
+`~/.cache/fund-data/releases/<version>/`. It defaults to the project
+OSS manifest (`FUND_DATA_MANIFEST_URL` overrides it). When
+`FUND_DATA_DB` is not set, CLI, MCP, and direct Python helper calls
+automatically prefer that cached query database over live providers.
+If OSS is unavailable, they fall back to the normal provider/API chain.
 
 To publish a new OSS release:
 

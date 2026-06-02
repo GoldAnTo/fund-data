@@ -225,14 +225,34 @@ class FundCloudBundleTests(unittest.TestCase):
         self.assertEqual(result["fallback"], None)
 
     def test_ensure_project_bundle_skips_when_explicit_db_is_configured(self):
-        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.dict(
+        with mock.patch.dict(
             os.environ, {"FUND_DATA_DB": "/tmp/explicit.sqlite"}, clear=True
         ), mock.patch.object(fund_cloud, "pull_bundle") as mock_pull:
-            result = fund_cloud.ensure_project_bundle(cache_dir=Path(tmpdir) / "cache")
+            result = fund_cloud.ensure_project_bundle()
 
         mock_pull.assert_not_called()
         self.assertFalse(result["installed"])
         self.assertEqual(result["skipped"], "FUND_DATA_DB is set")
+
+    def test_ensure_project_bundle_honors_cache_dir_even_when_fund_data_db_is_set(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "cache"
+            payload = {
+                "installed": True,
+                "cache_dir": str(cache_dir),
+                "db_path": str(cache_dir / "releases" / "v1" / fund_cloud.QUERY_DB_NAME),
+                "version": "v1",
+            }
+            with mock.patch.dict(
+                os.environ,
+                {"FUND_DATA_DB": "/tmp/explicit.sqlite", "FUND_DATA_CACHE_DIR": str(cache_dir)},
+                clear=True,
+            ), mock.patch.object(fund_cloud, "pull_bundle", return_value=payload) as mock_pull:
+                result = fund_cloud.ensure_project_bundle()
+
+        mock_pull.assert_called_once_with(fund_cloud.default_manifest_url(), cache_dir=cache_dir)
+        self.assertTrue(result["installed"])
+        self.assertEqual(result["source"], "oss")
 
     def test_ensure_project_bundle_returns_api_fallback_when_oss_pull_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir, mock.patch.dict(
@@ -245,6 +265,26 @@ class FundCloudBundleTests(unittest.TestCase):
         self.assertFalse(result["installed"])
         self.assertEqual(result["fallback"], "api")
         self.assertIn("network unavailable", result["error"])
+
+    def test_default_db_path_bootstraps_project_oss_for_direct_python_api(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_db = Path(tmpdir) / "cache" / "releases" / "v1" / fund_cloud.QUERY_DB_NAME
+            cache_db.parent.mkdir(parents=True)
+            cache_db.touch()
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+                fund_cloud,
+                "ensure_project_bundle",
+                return_value={
+                    "installed": True,
+                    "source": "oss",
+                    "db_path": str(cache_db),
+                    "version": "v1",
+                },
+            ) as mock_bootstrap:
+                result = fund_data.default_db_path()
+
+        mock_bootstrap.assert_called_once_with(cache_dir=None)
+        self.assertEqual(result, cache_db)
 
 
 class CloudCliSubcommandTests(unittest.TestCase):

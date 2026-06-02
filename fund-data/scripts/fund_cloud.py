@@ -553,7 +553,9 @@ def ensure_project_bundle(
     signal instead of raising, so live providers can still run.
     """
     cache_path = Path(cache_dir) if cache_dir is not None else default_cache_dir()
-    if os.environ.get("FUND_DATA_DB"):
+    if os.environ.get("FUND_DATA_DB") and not (
+        cache_dir is not None or os.environ.get("FUND_DATA_CACHE_DIR")
+    ):
         return {
             "installed": False,
             "cache_dir": str(cache_path),

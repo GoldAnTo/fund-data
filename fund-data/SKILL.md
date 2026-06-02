@@ -26,6 +26,14 @@ tools:
 
 Use this skill to turn ad hoc fund lookup into a repeatable local data workflow. The bundled Python scripts search funds, fetch core public fund data, store normalized rows in SQLite, and keep raw response snapshots for auditability.
 
+Agent default: before telling the user there is no local database or
+that only in-memory/live querying is available, run
+`python3 scripts/fund_cli.py cloud pull` or use the MCP tools. CLI,
+MCP, and direct Python helper calls default to the project OSS query
+bundle when `FUND_DATA_DB` is unset. Only fall back to live providers /
+API calls when OSS is unavailable, `FUND_DATA_AUTO_PULL=0`, or the user
+explicitly sets `FUND_DATA_DB` / `--db`.
+
 The first version uses no-key Eastmoney public endpoints and optional AkShare fallback. If the user provides an Investoday API key or asks for provider-catalog endpoints such as benchmark returns, manager data, or fund categories, use the existing financial-data API workflow as the higher-fidelity source and keep this skill's SQLite schema as the local persistence layer.
 
 ## Quick Start
@@ -33,6 +41,8 @@ The first version uses no-key Eastmoney public endpoints and optional AkShare fa
 Resolve paths relative to this skill folder.
 
 ```bash
+python3 scripts/fund_cli.py cloud pull
+python3 scripts/fund_cli.py cloud status
 python3 scripts/fund_cli.py list --provider auto --limit 20
 python3 scripts/fund_cli.py search 沪深300
 python3 scripts/fund_cli.py nav 110022 --start-date 2024-01-01 --end-date 2024-01-31
