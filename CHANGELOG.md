@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file. Versions
 follow [Semantic Versioning](https://semver.org/) once the project reaches
 1.0. The pre-1.0 series (0.x) is allowed to break compat in minor bumps.
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-06-02)
 
 The "split the monolith" release. The 0.2.0 line shipped the
 data plane; 0.3.0 is about making the codebase sustainable for
@@ -13,26 +13,67 @@ allowed to break compat in minor bumps, but every planned break
 ships behind a re-export facade so CLI / MCP consumers keep
 working unchanged.
 
-### Planned (RFCs in flight)
+### Shipped
 
-- **`fund_data.py` 3605-line split** — propose:
-  `providers/`, `store.py`, `schema.py`, `sync.py`,
-  `normalizers.py`. The top-level `fund_data.py` stays as a
-  re-export facade so every existing
+- **`fund_data.py` 3605-line split — DONE.** Resolved
+  RFC `docs/superpowers/specs/2026-06-02-fund-data-0.3-split.md`
+  across 6 sequential PRs (1 per logical layer, all merged
+  into main as `a8b508a`):
+
+  | PR | commit | What landed |
+  |---|---|---|
+  | 1 | `0424b79` | `paths.py` + `schema/migrations.py`; `__init__.py` 3605 → 3410 |
+  | 2 | `8b28b2a` | `normalizers.py`; 55 new tests |
+  | 3 | `8b3d442` | `parsers.py` (incl. `normalize_fund_codes`); 31 new tests |
+  | 4 | `0915beb` | `http.py` + `providers/{base,eastmoney,akshare,investoday,tushare}.py`; 27 new tests |
+  | 5 | `52f2445` | `store.py` (773L) + `fetch.py` (387L) + `sync.py` (484L); 14 new tests |
+  | 6 | `561d2c3` | `__init__.py` tightened: explicit `__all__` (68 names), 14 unused stdlib imports removed, `write_rows` + `export_table` retained, `test_facade_completeness.py` added (7 tests) |
+
+  Net effect: `fund_data.py` 3605-line monolith is gone. The
+  same path now resolves to a 305-line facade over 15
+  focused modules (`fund_data/` package, 4622 lines total
+  including the per-module `__all__` + docstrings + import
+  blocks). The agent contract — `fund_data.foo()`, CLI flags,
+  MCP tools, JSON schemas — is byte-identical: every existing
   `from scripts import fund_data; fund_data.snapshot(...)` and
-  every CLI/MCP entry point continues to work. RFC draft
-  pending review.
+  every CLI/MCP entry point continues to work without change.
+  262 → 406 tests (+54 %). The 1 unrelated main error
+  (`test_upload_dry_run_reports_planned_artifacts_without_calling_ossutil`,
+  introduced in commit `fac2db6`) predates this release and is
+  out of scope.
+
+  **Architectural pivot during PR 1:** the RFC originally
+  proposed keeping `fund_data.py` as a shim and building the
+  `fund_data/` package alongside. CPython at the same
+  location picks `.py` over `foo/` package, so we deleted
+  `fund_data.py` and lifted the content into `__init__.py`
+  instead. Documented in commit `0424b79`.
+
+  **Note on `normalize_fund_codes`:** RFC put it in
+  `normalizers.py`, but it calls `parse_fund_codes` (parser
+  dep). Inverting the dep would violate the RFC graph, so
+  PR 3 moved it to `parsers.py` and re-exported from
+  `normalizers.py` for back-compat.
+
+### Carried forward to 0.3.1+ (KNOWN_GAPS still open)
+
+The split unblocks these — they each have a clear home now:
+
 - **fund_managers fund-centric link view** — KNOWN_GAPS #5.
   Either upgrade the Investoday key to ¥45 基础包
   (unlocks `/fund-manager/basic-info` L1, ~200 calls/min,
   structured JSON) and bulk-import, or schedule a one-shot
   9 h AkShare run on cron. The data shape is small; the
-  work is provider onboarding.
+  work is provider onboarding. New home: `store.py`
+  (`FundDataStore.upsert_fund_manager_link` already exists
+  from PR 5).
 - **`refresh_fund_type` nightly automation** — KNOWN_GAPS #6.
   Wire `scripts/refresh_fund_type.py` into the nightly sync
-  so new funds land with a real type from day one.
+  so new funds land with a real type from day one. New home:
+  `sync.py` (`batch_sync_funds` orchestrator).
 - **`AkshareProvider.snapshot`** — closes the 380
-  `sync_failures` row gap; pairs with KNOWN_GAPS #3.
+  `sync_failures` row gap; pairs with KNOWN_GAPS #3. New
+  home: `providers/akshare.py`.
 - **`coverage_report` `EXPECTED_EMPTY` matrix as a
   data-driven artifact** — currently a flat dict in
   `scripts/coverage_report.py`; the 0.3.0 plan is to lift
