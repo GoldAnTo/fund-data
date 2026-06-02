@@ -31,6 +31,8 @@ from typing import Any
 
 from . import normalizers
 
+from . import normalizers
+
 __all__ = [
     "parse_search_results",
     "parse_fund_code_list",
