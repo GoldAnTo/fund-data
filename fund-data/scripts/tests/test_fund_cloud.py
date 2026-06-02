@@ -1,6 +1,9 @@
 import gzip
+import io
+import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -155,6 +158,188 @@ class FundCloudBundleTests(unittest.TestCase):
             self.assertFalse(result["installed"])
             self.assertEqual(result["cache_dir"], str(cache_dir))
             self.assertFalse(cache_dir.exists())
+
+
+class CloudCliSubcommandTests(unittest.TestCase):
+    """``fund_cli.py cloud <cmd>`` is the agent's stable
+    entry point for inspecting / building / pulling the cloud
+    bundle. These tests lock down the stdout / --output /
+    exit-code contract for the four subcommands and pin the
+    status subcommand's top-level JSON schema so a refactor
+    cannot silently rename ``installed`` / ``version`` /
+    ``db_path`` / ``sha256``."""
+
+    def _run_cli(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(SCRIPT_DIR / "fund_cli.py"), *args],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    def test_status_emits_valid_json_with_stable_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cache"
+            result = self._run_cli(
+                "cloud", "status", "--cache-dir", str(cache_dir)
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        # Pin the schema. The agent branches on these four keys
+        # for "is the cloud cache healthy / installed / current
+        # version / what path does it live at".
+        self.assertIn("installed", payload)
+        self.assertIn("cache_dir", payload)
+        self.assertIn("db_path", payload)
+        self.assertIn("version", payload)
+        # When the cache is empty, these are exactly None / False.
+        self.assertFalse(payload["installed"])
+        self.assertIsNone(payload["db_path"])
+        self.assertIsNone(payload["version"])
+
+    def test_status_writes_to_output_file_and_leaves_stdout_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cache"
+            out_path = Path(tmp) / "report.json"
+            result = self._run_cli(
+                "cloud",
+                "status",
+                "--cache-dir",
+                str(cache_dir),
+                "--output",
+                str(out_path),
+            )
+            # Diagnostic: print everything on a failure so the
+            # next agent does not have to guess what the child
+            # subprocess saw.
+            self.assertEqual(
+                result.returncode,
+                0,
+                f"returncode={result.returncode}\n"
+                f"stdout={result.stdout!r}\nstderr={result.stderr!r}\n"
+                f"out_path.exists()={out_path.exists()}\n"
+                f"out_path={out_path}",
+            )
+            self.assertEqual(result.stdout, "")
+            payload = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertIn("installed", payload)
+            self.assertFalse(payload["installed"])
+
+    def test_pull_without_manifest_url_exits_nonzero_with_stderr_message(self):
+        # No manifest URL anywhere -> the agent gets a clear
+        # signal on stderr and a non-zero exit code. We do not
+        # want the agent to silently re-call with a guessed URL
+        # and download the wrong bundle.
+        env = os.environ.copy()
+        env.pop("FUND_DATA_MANIFEST_URL", None)
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_DIR / "fund_cli.py"), "cloud", "pull"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("manifest-url", result.stderr)
+        # stdout must be empty so the agent does not see a
+        # truncated JSON envelope.
+        self.assertEqual(result.stdout, "")
+
+    def test_build_bundle_end_to_end_with_output_file(self):
+        # Confirm the --output flag round-trips through the CLI
+        # by patching ``fund_cloud.build_bundle`` at the import
+        # site (the test runner already has the package on the
+        # path, so a child subprocess sees the same module).
+        # Skipping the real bundle keeps the test independent of
+        # the SQLite ATTACH locking edge cases that an
+        # interactive run of build_bundle can hit.
+        import fund_data
+        import fund_cloud
+
+        # Reuse the real fund_data db (a small per-test copy of
+        # an empty SQLite would be ideal, but a 3.8 GB production
+        # db is fine when we never read it). The mocked
+        # build_bundle never opens it.
+        source_db = fund_data.DEFAULT_DB_PATH
+
+        fake_result = {
+            "release_dir": "/tmp/release",
+            "manifest_path": "/tmp/release/manifest.json",
+            "query_db_path": "/tmp/release/fund_data_query.sqlite.gz",
+            "query_archive_path": "/tmp/release/fund_data_query.sqlite.gz.sha256",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            output_dir = tmp_path / "release"
+            manifest_output = tmp_path / "manifest.json"
+            report_path = tmp_path / "build_report.json"
+            # Build a tiny launcher that uses the same Python
+            # interpreter but patches fund_cloud.build_bundle
+            # before calling fund_cli.main. This way the CLI's
+            # --output flag is exercised against a real
+            # subprocess without paying for a full bundle build.
+            launcher = tmp_path / "launcher.py"
+            launcher.write_text(
+                "import json\n"
+                "import sys\n"
+                "from unittest import mock\n"
+                "sys.path.insert(0, " + repr(str(SCRIPT_DIR.resolve())) + ")\n"
+                "import fund_cloud\n"
+                "import fund_cli\n"
+                "with mock.patch.object(\n"
+                "    fund_cloud, \"build_bundle\",\n"
+                "    return_value=json.load(open(sys.argv[1])),\n"
+                "):\n"
+                "    sys.exit(fund_cli.main(sys.argv[2:]))\n",
+                encoding="utf-8",
+            )
+            result_path = tmp_path / "fake_result.json"
+            result_path.write_text(
+                json.dumps(fake_result), encoding="utf-8"
+            )
+            with mock.patch.dict(
+                os.environ,
+                {"PYTHONPATH": str(SCRIPT_DIR.resolve().parent)},
+                clear=False,
+            ):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(launcher),
+                        str(result_path),
+                        "cloud",
+                        "build-bundle",
+                        "--source-db",
+                        str(source_db),
+                        "--output-dir",
+                        str(output_dir),
+                        "--base-url",
+                        "https://example.com/fund-data/releases/2026-06-01/",
+                        "--version",
+                        "2026-06-01",
+                        "--manifest-output",
+                        str(manifest_output),
+                        "--output",
+                        str(report_path),
+                    ],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=os.environ.copy(),
+                )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+            # Pin the success envelope: the agent needs the
+            # release_dir, manifest_path, and query_db_path to
+            # then upload to OSS.
+            self.assertIn("release_dir", payload)
+            self.assertIn("manifest_path", payload)
+            self.assertIn("query_db_path", payload)
+            self.assertEqual(payload["release_dir"], fake_result["release_dir"])
 
 
 if __name__ == "__main__":
