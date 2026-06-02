@@ -32,6 +32,19 @@ def _print_json(value) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
+def _write_json_to_file(path: str, value) -> None:
+    """Write a JSON payload to ``path``, creating parent directories
+    on demand. Used by subcommands that want a structured
+    report on disk for later inspection (e.g. an agent's
+    nightly health check that archives the cloud cache status)."""
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 LOG_LEVEL_CHOICES = ["DEBUG", "INFO", "WARNING", "ERROR"]
 
 
@@ -338,6 +351,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--manifest-output",
         help="Optional path for the published current/manifest.json file.",
     )
+    build_bundle.add_argument(
+        "--output",
+        help="Write the JSON result to this file instead of stdout. "
+        "Parent directories are created on demand.",
+    )
+
+    archive_full = cloud_subparsers.add_parser(
+        "archive-full",
+        help="Build a private full-data archive (with raw_responses) for backup",
+    )
+    archive_full.add_argument(
+        "--source-db",
+        default=str(fund_data.DEFAULT_DB_PATH),
+        help="Full local SQLite database to archive.",
+    )
+    archive_full.add_argument(
+        "--output-dir", required=True, help="Archive output directory."
+    )
+    archive_full.add_argument(
+        "--base-url",
+        required=True,
+        help="Public HTTPS URL prefix for the archive directory.",
+    )
+    archive_full.add_argument("--version", help="Archive version, such as 2026-06-01.")
+    archive_full.add_argument(
+        "--output",
+        help="Write the JSON result to this file instead of stdout.",
+    )
 
     pull = cloud_subparsers.add_parser("pull", help="Download and install a cloud query bundle")
     pull.add_argument(
@@ -346,12 +387,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="HTTPS/file URL for manifest.json. Defaults to FUND_DATA_MANIFEST_URL.",
     )
     pull.add_argument("--cache-dir", help="Local cache directory. Defaults to ~/.cache/fund-data.")
+    pull.add_argument(
+        "--output",
+        help="Write the JSON result to this file instead of stdout.",
+    )
 
     status = cloud_subparsers.add_parser("status", help="Show local cloud cache status")
     status.add_argument(
         "--cache-dir", help="Local cache directory. Defaults to ~/.cache/fund-data."
     )
     status.add_argument("--manifest-url", help="Optional remote manifest URL to compare against.")
+    status.add_argument(
+        "--output",
+        help="Write the JSON result to this file instead of stdout.",
+    )
 
     return parser
 
@@ -616,25 +665,46 @@ def main(argv: list[str] | None = None) -> int:
                     version=args.version,
                     manifest_output=args.manifest_output,
                 )
-                _print_json(fund_cloud.json_ready(result))
+                payload = fund_cloud.json_ready(result)
+                if args.output:
+                    _write_json_to_file(args.output, payload)
+                else:
+                    _print_json(payload)
+                return 0
+            if args.cloud_command == "archive-full":
+                result = fund_cloud.archive_full(
+                    source_db=args.source_db,
+                    output_dir=args.output_dir,
+                    base_url=args.base_url,
+                    version=args.version,
+                )
+                payload = fund_cloud.json_ready(result)
+                if args.output:
+                    _write_json_to_file(args.output, payload)
+                else:
+                    _print_json(payload)
                 return 0
             if args.cloud_command == "pull":
                 if not args.manifest_url:
                     raise ValueError("--manifest-url or FUND_DATA_MANIFEST_URL is required")
-                _print_json(
-                    fund_cloud.pull_bundle(
-                        args.manifest_url,
-                        cache_dir=args.cache_dir,
-                    )
+                payload = fund_cloud.pull_bundle(
+                    args.manifest_url,
+                    cache_dir=args.cache_dir,
                 )
+                if args.output:
+                    _write_json_to_file(args.output, payload)
+                else:
+                    _print_json(payload)
                 return 0
             if args.cloud_command == "status":
-                _print_json(
-                    fund_cloud.status(
-                        cache_dir=args.cache_dir,
-                        manifest_url=args.manifest_url,
-                    )
+                payload = fund_cloud.status(
+                    cache_dir=args.cache_dir,
+                    manifest_url=args.manifest_url,
                 )
+                if args.output:
+                    _write_json_to_file(args.output, payload)
+                else:
+                    _print_json(payload)
                 return 0
 
     except Exception as exc:
