@@ -43,11 +43,20 @@ jobs:
           # the release tag so the runner does not silently
           # pick up a newer build whose command-line surface
           # may have changed.
-          curl -sSL -o /tmp/ossutil64.zip \
-            https://github.com/aliyun/ossutil/releases/download/v1.7.18/ossutil64-1.7.18-linux.zip
-          unzip -q /tmp/ossutil64.zip -d /tmp/ossutil
-          sudo mv /tmp/ossutil/ossutil64 /usr/local/bin/ossutil
-          rm -rf /tmp/ossutil /tmp/ossutil64.zip
+          #
+          # Asset naming history (matters because the legacy
+          # "ossutil64" name is what older docs and StackOverflow
+          # answers still link to, and that name 404s on the
+          # current release page):
+          #   v1.7.18 and later  ->  ossutil-<ver>-linux-amd64.zip
+          #                              binary inside:  ossutil
+          #   pre-v1.7.18 (legacy) -> ossutil64-<ver>-linux.zip
+          #                              binary inside:  ossutil64
+          curl -sSL -o /tmp/ossutil.zip \
+            https://github.com/aliyun/ossutil/releases/download/v1.7.18/ossutil-v1.7.18-linux-amd64.zip
+          unzip -q /tmp/ossutil.zip -d /tmp/ossutil
+          sudo mv /tmp/ossutil/ossutil /usr/local/bin/ossutil
+          rm -rf /tmp/ossutil /tmp/ossutil.zip
           ossutil --version
 
       - name: configure-ossutil-deploy-key
