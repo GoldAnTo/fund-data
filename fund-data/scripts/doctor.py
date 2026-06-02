@@ -2,7 +2,7 @@
 
 Run this on a fresh checkout or before kicking off a long
 backfill. It surfaces the most common "why is this thing broken"
-problems so the operator can fix them before the first batch fails:
+problems so the operator can fix the before the first batch fails:
 
 - Is the SQLite database reachable? Is the schema intact?
 - Is the AkShare virtual environment present and importable?
@@ -10,6 +10,18 @@ problems so the operator can fix them before the first batch fails:
 - Are the provider scripts callable from the current Python?
 - Are there stale sync failures in the queue?
 - What is the current coverage rate per dataset?
+- **Where will agents actually write?**
+  ``default_db`` calls ``fund_data.default_db_path()`` (the same
+  resolver an agent uses) and tags the result as
+  ``cloud_cache`` / ``full_local`` / ``env_override`` /
+  ``unknown``. Without this, ``--db`` defaulted to the on-disk
+  full DB while agents and the cloud bootstrap pointed at a
+  different file — see ``fund-data/AGENTS.md`` §"Long-running
+  pitfalls".
+- **Is the cloud bundle stale?**
+  ``cloud_cache`` reads ``fund_cloud.status()`` and surfaces
+  ``update_available``. Doctor never triggers a pull; the
+  caller decides whether to refresh.
 
 Exits non-zero if any check fails, so it can gate CI or a backfill.
 """
@@ -37,6 +49,7 @@ from _net_compat import apply as _apply_net_compat  # noqa: E402
 _apply_net_compat()
 
 import fund_data  # noqa: E402
+import fund_cloud  # noqa: E402
 
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"
 DEFAULT_VENV = SCRIPT_DIR.parent.parent / ".venv-akshare"
@@ -294,9 +307,117 @@ def _check_backfill_stale(
     return result
 
 
+def _classify_default_db_source(resolved: Path) -> str:
+    """Tag a resolved default DB path by which layer of fund_data.default_db_path() it came from.
+
+    Layers (see fund_data.default_db_path docstring):
+      1. ``FUND_DATA_DB`` env var            -> "env_override"
+      2. ``fund_cloud.ensure_project_bundle``-> "cloud_cache" (newly pulled)
+      3. ``fund_cloud.current_db_path``      -> "cloud_cache" (reused)
+      4. ``DEFAULT_DB_PATH`` fallback        -> "full_local"
+
+    Anything else is "unknown" — that should not happen in
+    practice, but the field is explicit so an agent can
+    branch on it without guessing.
+    """
+    configured = os.environ.get("FUND_DATA_DB", "").strip()
+    if configured:
+        try:
+            if Path(configured).resolve() == resolved.resolve():
+                return "env_override"
+        except OSError:
+            pass
+    try:
+        cache_dir = fund_cloud.default_cache_dir()
+        if cache_dir and resolved.is_relative_to(cache_dir):
+            return "cloud_cache"
+    except (ValueError, OSError):
+        pass
+    try:
+        if resolved.resolve() == DEFAULT_DB_PATH.resolve():
+            return "full_local"
+    except OSError:
+        pass
+    return "unknown"
+
+
+def _check_default_db() -> dict[str, object]:
+    """Resolve the DB an agent will actually open via fund_data.default_db_path().
+
+    The previous doctor default (DEFAULT_DB_PATH) silently disagreed
+    with the resolver agents and the cloud bootstrap use, which is
+    why ``sync_failures`` could be 8 in the on-disk full DB and 0 in
+    the cloud query DB. This check is the single source of truth for
+    the question "where will writes land?".
+
+    ``ok`` is True as long as the resolver returned a path;
+    `exists=False` is reported but not treated as a hard failure
+    — first run / fresh checkout legitimately has no DB yet.
+    """
+    try:
+        resolved = fund_data.default_db_path()
+    except Exception as exc:  # network/import errors during cloud bootstrap
+        return {
+            "ok": False,
+            "message": f"default_db_path raised {type(exc).__name__}: {exc}",
+        }
+    return {
+        "ok": True,
+        "path": str(resolved),
+        "exists": resolved.is_file(),
+        "source": _classify_default_db_source(resolved),
+    }
+
+
+def _check_cloud_cache(*, manifest_url: str | None = None) -> dict[str, object]:
+    """Read fund_cloud.status() and surface a stale-cache warning.
+
+    The cloud status subcommand already reports ``update_available``;
+    this check pipes that signal into doctor so the operator or
+    agent does not have to run a second command. doctor does NOT
+    trigger a pull — that decision belongs to the caller.
+
+    ``ok`` stays True even when ``update_available`` is true:
+    staleness is a warning, not a hard failure. Agents that want
+    to fail on staleness should branch on ``update_available``
+    in the payload rather than on the exit code.
+
+    Pass ``manifest_url=None`` to skip the remote HEAD probe (CI
+    friendly). When non-None, ``fund_cloud.status`` does a
+    ``HEAD``/``GET`` on the manifest URL — the caller decides
+    whether network is allowed.
+    """
+    try:
+        info = fund_cloud.status(manifest_url=manifest_url)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"fund_cloud.status raised {type(exc).__name__}: {exc}",
+        }
+    out: dict[str, object] = {
+        "ok": True,
+        "installed": bool(info.get("installed")),
+        "version": info.get("version"),
+        "manifest_url": info.get("manifest_url") or manifest_url,
+        "remote_version": info.get("remote_version"),
+        "update_available": bool(info.get("update_available", False)),
+    }
+    if not out["installed"]:
+        out["skipped"] = "no cloud cache installed"
+    return out
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--db", default=str(DEFAULT_DB_PATH), help="SQLite path")
+    parser.add_argument(
+        "--db",
+        default=None,
+        help=(
+            "SQLite path. Default: whatever fund_data.default_db_path() "
+            "resolves to (i.e. the same DB agents will open when they "
+            "call the skill). Pass --db to override for one run."
+        ),
+    )
     parser.add_argument("--venv", default=str(DEFAULT_VENV), help="AkShare venv path")
     parser.add_argument(
         "--skip-network",
@@ -320,6 +441,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    if args.db is None:
+        # Resolve the same way the agent does, so doctor's
+        # sync_failures / coverage / backfill_stale numbers match
+        # what the agent actually sees. --db overrides stay as-is
+        # for the ad-hoc "poke this one db" workflow.
+        try:
+            args.db = str(fund_data.default_db_path())
+        except Exception:
+            # If the resolver itself fails (e.g. cloud bootstrap
+            # network error), fall back to the on-disk file so the
+            # rest of the report is still useful. The
+            # default_db check surfaces the resolution failure.
+            args.db = str(DEFAULT_DB_PATH)
     db_path = Path(args.db)
     venv = Path(args.venv)
 
@@ -334,6 +468,20 @@ def main(argv: list[str] | None = None) -> int:
     checks["sync_failures"] = _check_sync_failures(db_path)
     checks["coverage"] = _check_coverage(db_path)
     checks["backfill_stale"] = _check_backfill_stale(DEFAULT_BACKFILL_STATE, db_path)
+    checks["default_db"] = _check_default_db()
+    if args.skip_network:
+        # fund_cloud.status() with manifest_url=None skips the
+        # remote probe and reports only the local cache metadata.
+        cloud_manifest_url: str | None = None
+    else:
+        # Default: check the project OSS manifest for staleness
+        # so doctor surfaces a warning the moment a newer bundle
+        # is published. FUND_DATA_MANIFEST_URL still wins.
+        cloud_manifest_url = (
+            os.environ.get("FUND_DATA_MANIFEST_URL")
+            or fund_cloud.default_manifest_url()
+        )
+    checks["cloud_cache"] = _check_cloud_cache(manifest_url=cloud_manifest_url)
 
     payload = json.dumps(checks, ensure_ascii=False, indent=None if args.quiet else 2)
 

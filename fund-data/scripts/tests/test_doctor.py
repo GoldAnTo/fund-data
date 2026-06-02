@@ -11,6 +11,8 @@ import sys
 sys.path.insert(0, str(sys_path))
 
 from scripts import doctor  # noqa: E402
+from scripts import fund_cloud  # noqa: E402
+from scripts import fund_data  # noqa: E402
 
 
 class CheckDbTests(unittest.TestCase):
@@ -119,6 +121,160 @@ class CheckSyncFailuresTests(unittest.TestCase):
             self.assertEqual(result["count"], 0)
 
 
+class ClassifyDefaultDbSourceTests(unittest.TestCase):
+    """Pin the four-way ``source`` tag so an agent that branches on
+    ``payload["default_db"]["source"]`` does not silently flip when
+    the resolver changes.
+
+    Layers (must be exhaustive, otherwise the agent gets a stale
+    "unknown" and can't tell which knob to turn):
+      env_override | cloud_cache | full_local | unknown
+    """
+
+    def test_env_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "explicit.sqlite"
+            target.touch()
+            with patch.dict("os.environ", {"FUND_DATA_DB": str(target)}):
+                self.assertEqual(
+                    doctor._classify_default_db_source(target), "env_override"
+                )
+
+    def test_full_local(self):
+        # The on-disk fallback the project ships with.
+        self.assertEqual(
+            doctor._classify_default_db_source(doctor.DEFAULT_DB_PATH), "full_local"
+        )
+
+    def test_cloud_cache(self):
+        # Anything under the cloud cache dir is the cloud query DB.
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp) / "cache"
+            cache_dir.mkdir()
+            cached_db = cache_dir / "fund_data.sqlite"
+            with patch.object(doctor.fund_cloud, "default_cache_dir", return_value=cache_dir):
+                self.assertEqual(
+                    doctor._classify_default_db_source(cached_db), "cloud_cache"
+                )
+
+    def test_unknown(self):
+        # A path that is not env, not in the cache dir, not the
+        # on-disk fallback — surfaces the "I don't know" verdict
+        # so the agent does not assume cloud_cache.
+        with tempfile.TemporaryDirectory() as tmp:
+            elsewhere = Path(tmp) / "somewhere.sqlite"
+            with patch.object(doctor.fund_cloud, "default_cache_dir", return_value=Path(tmp) / "nope"):
+                self.assertEqual(
+                    doctor._classify_default_db_source(elsewhere), "unknown"
+                )
+
+
+class CheckDefaultDbTests(unittest.TestCase):
+    def test_resolves_to_default_when_db_missing(self):
+        # First run / fresh checkout: no DB on disk yet. ``ok`` is
+        # still True (this is not a hard failure), ``exists``
+        # reports the truth.
+        with patch.object(doctor.fund_data, "default_db_path", return_value=Path("/nonexistent/fund.sqlite")):
+            result = doctor._check_default_db()
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["exists"])
+        self.assertEqual(result["path"], "/nonexistent/fund.sqlite")
+        # The classifier must still tag the path so an agent that
+        # branches on ``source`` does not KeyError.
+        self.assertIn("source", result)
+
+    def test_reports_resolver_error_as_failure(self):
+        # Network blip during cloud bootstrap should not silently
+        # succeed — surface it as ok=False with the error name.
+        with patch.object(
+            doctor.fund_data, "default_db_path", side_effect=RuntimeError("bootstrap boom")
+        ):
+            result = doctor._check_default_db()
+        self.assertFalse(result["ok"])
+        self.assertIn("bootstrap boom", result["message"])
+
+
+class CheckCloudCacheTests(unittest.TestCase):
+    def test_reports_installed_and_up_to_date(self):
+        with patch.object(
+            doctor.fund_cloud,
+            "status",
+            return_value={
+                "installed": True,
+                "version": "2026-06-02-130900",
+                "manifest_url": "https://example/manifest.json",
+                "remote_version": "2026-06-02-130900",
+                "update_available": False,
+            },
+        ):
+            result = doctor._check_cloud_cache(manifest_url="https://example/manifest.json")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["installed"])
+        self.assertFalse(result["update_available"])
+        self.assertIsNone(result.get("skipped"))
+
+    def test_surfaces_stale_as_warning_not_error(self):
+        # update_available=True is the headline use case for this
+        # check. ok must stay True — agents that want to fail on
+        # staleness branch on ``update_available``, not the exit
+        # code (which would break CI for a non-error condition).
+        with patch.object(
+            doctor.fund_cloud,
+            "status",
+            return_value={
+                "installed": True,
+                "version": "2026-06-02-053226",
+                "manifest_url": "https://example/manifest.json",
+                "remote_version": "2026-06-02-163200",
+                "update_available": True,
+            },
+        ):
+            result = doctor._check_cloud_cache(manifest_url="https://example/manifest.json")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["update_available"])
+        self.assertEqual(result["version"], "2026-06-02-053226")
+        self.assertEqual(result["remote_version"], "2026-06-02-163200")
+
+    def test_skips_remote_probe_when_manifest_url_is_none(self):
+        # CI / --skip-network mode: caller passes manifest_url=None
+        # and ``status`` returns only local cache metadata. The
+        # check must not crash and must not pretend to know the
+        # remote version.
+        with patch.object(
+            doctor.fund_cloud,
+            "status",
+            return_value={
+                "installed": True,
+                "version": "2026-06-02-053226",
+            },
+        ) as mock_status:
+            result = doctor._check_cloud_cache(manifest_url=None)
+        # status was called with manifest_url=None (no remote probe)
+        mock_status.assert_called_once_with(manifest_url=None)
+        self.assertTrue(result["ok"])
+        self.assertIsNone(result["remote_version"])
+        self.assertFalse(result["update_available"])
+
+    def test_reports_not_installed_as_skipped(self):
+        with patch.object(
+            doctor.fund_cloud,
+            "status",
+            return_value={"installed": False, "version": None},
+        ):
+            result = doctor._check_cloud_cache(manifest_url=None)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["installed"])
+        self.assertEqual(result["skipped"], "no cloud cache installed")
+
+    def test_reports_status_error_as_failure(self):
+        with patch.object(
+            doctor.fund_cloud, "status", side_effect=OSError("manifest URL unreachable")
+        ):
+            result = doctor._check_cloud_cache(manifest_url="https://broken/")
+        self.assertFalse(result["ok"])
+        self.assertIn("manifest URL unreachable", result["message"])
+
+
 class MainOutputSchemaTests(unittest.TestCase):
     """``doctor.main`` is the agent-facing entry point. Lock its
     stdout / stderr / exit-code contract so a future refactor cannot
@@ -141,6 +297,8 @@ class MainOutputSchemaTests(unittest.TestCase):
         "sync_failures",
         "coverage",
         "backfill_stale",
+        "default_db",
+        "cloud_cache",
     }
     EXPECTED_TOP_LEVEL_KEYS_NO_NETWORK = (
         EXPECTED_TOP_LEVEL_KEYS - {"eastmoney_reachable"}
@@ -160,6 +318,15 @@ class MainOutputSchemaTests(unittest.TestCase):
             "sync_failures": {"ok": True, "count": 0},
             "coverage": {"ok": True, "total_funds": 26936, "incomplete_examples": 0, "min_completeness": 1.0},
             "backfill_stale": {"ok": True, "skipped": "no backfill state file"},
+            "default_db": {"ok": True, "path": "/tmp/fund.sqlite", "exists": True, "source": "full_local"},
+            "cloud_cache": {
+                "ok": True,
+                "installed": True,
+                "version": "2026-06-02-130900",
+                "manifest_url": "https://example/manifest.json",
+                "remote_version": "2026-06-02-130900",
+                "update_available": False,
+            },
         }
 
     def _mixed_checks(self) -> dict[str, object]:
@@ -196,6 +363,19 @@ class MainOutputSchemaTests(unittest.TestCase):
         ), patch.object(
             doctor, "_check_backfill_stale",
             return_value={"ok": True, "skipped": "no backfill state file"},
+        ), patch.object(
+            doctor, "_check_default_db",
+            return_value={"ok": True, "path": "/tmp/fund.sqlite", "exists": True, "source": "full_local"},
+        ), patch.object(
+            doctor, "_check_cloud_cache",
+            return_value={
+                "ok": True,
+                "installed": True,
+                "version": "2026-06-02-130900",
+                "manifest_url": "https://example/manifest.json",
+                "remote_version": "2026-06-02-130900",
+                "update_available": False,
+            },
         ):
             with patch("sys.stdout", new_callable=__import__("io").StringIO) as out, patch(
                 "sys.stderr", new_callable=__import__("io").StringIO
@@ -242,6 +422,19 @@ class MainOutputSchemaTests(unittest.TestCase):
         ), patch.object(
             doctor, "_check_backfill_stale",
             return_value={"ok": True, "skipped": "no backfill state file"},
+        ), patch.object(
+            doctor, "_check_default_db",
+            return_value={"ok": True, "path": "/tmp/fund.sqlite", "exists": True, "source": "full_local"},
+        ), patch.object(
+            doctor, "_check_cloud_cache",
+            return_value={
+                "ok": True,
+                "installed": True,
+                "version": "2026-06-02-130900",
+                "manifest_url": "https://example/manifest.json",
+                "remote_version": "2026-06-02-130900",
+                "update_available": False,
+            },
         ):
             with patch("sys.stdout", new_callable=__import__("io").StringIO) as out, patch(
                 "sys.stderr", new_callable=__import__("io").StringIO
@@ -290,6 +483,19 @@ class MainOutputSchemaTests(unittest.TestCase):
         ), patch.object(
             doctor, "_check_backfill_stale",
             return_value={"ok": True, "skipped": "no backfill state file"},
+        ), patch.object(
+            doctor, "_check_default_db",
+            return_value={"ok": True, "path": "/tmp/fund.sqlite", "exists": True, "source": "full_local"},
+        ), patch.object(
+            doctor, "_check_cloud_cache",
+            return_value={
+                "ok": True,
+                "installed": True,
+                "version": "2026-06-02-130900",
+                "manifest_url": "https://example/manifest.json",
+                "remote_version": "2026-06-02-130900",
+                "update_available": False,
+            },
         ):
             with patch("sys.stdout", new_callable=__import__("io").StringIO) as out, patch(
                 "sys.stderr", new_callable=__import__("io").StringIO
@@ -335,6 +541,19 @@ class MainOutputSchemaTests(unittest.TestCase):
             ), patch.object(
                 doctor, "_check_backfill_stale",
                 return_value={"ok": True, "skipped": "no backfill state file"},
+            ), patch.object(
+                doctor, "_check_default_db",
+                return_value={"ok": True, "path": "/tmp/fund.sqlite", "exists": True, "source": "full_local"},
+            ), patch.object(
+                doctor, "_check_cloud_cache",
+                return_value={
+                    "ok": True,
+                    "installed": True,
+                    "version": "2026-06-02-130900",
+                    "manifest_url": "https://example/manifest.json",
+                    "remote_version": "2026-06-02-130900",
+                    "update_available": False,
+                },
             ):
                 with patch("sys.stdout", new_callable=__import__("io").StringIO) as out:
                     exit_code = doctor.main(argv)
