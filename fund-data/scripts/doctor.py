@@ -296,6 +296,18 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Skip the live Eastmoney reachability probe (useful in CI).",
     )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Emit compact JSON (no indent) and skip the human-readable "
+        "FAIL banner on stderr. The exit code still mirrors the overall "
+        "ok flag, so this is the agent-friendly mode.",
+    )
+    parser.add_argument(
+        "--output",
+        help="Write the JSON report to this file instead of stdout. "
+        "Parent directories are created on demand.",
+    )
     return parser.parse_args(argv)
 
 
@@ -316,7 +328,14 @@ def main(argv: list[str] | None = None) -> int:
     checks["coverage"] = _check_coverage(db_path)
     checks["backfill_stale"] = _check_backfill_stale(DEFAULT_BACKFILL_STATE, db_path)
 
-    print(json.dumps(checks, ensure_ascii=False, indent=2))
+    payload = json.dumps(checks, ensure_ascii=False, indent=None if args.quiet else 2)
+
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(payload + "\n", encoding="utf-8")
+    else:
+        print(payload)
 
     def _is_ok(value: object) -> bool:
         if isinstance(value, dict):
@@ -324,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
         return True
 
     overall_ok = all(_is_ok(v) for v in checks.values())
-    if not overall_ok:
+    if not overall_ok and not args.quiet:
         print("\nFAIL: one or more checks reported a problem.", file=sys.stderr)
     return 0 if overall_ok else 1
 
