@@ -4,6 +4,137 @@ All notable changes to this project are documented in this file. Versions
 follow [Semantic Versioning](https://semver.org/) once the project reaches
 1.0. The pre-1.0 series (0.x) is allowed to break compat in minor bumps.
 
+## 0.3.0 (unreleased)
+
+The "split the monolith" release. The 0.2.0 line shipped the
+data plane; 0.3.0 is about making the codebase sustainable for
+the next round of capability additions. The pre-1.0 series is
+allowed to break compat in minor bumps, but every planned break
+ships behind a re-export facade so CLI / MCP consumers keep
+working unchanged.
+
+### Planned (RFCs in flight)
+
+- **`fund_data.py` 3605-line split** — propose:
+  `providers/`, `store.py`, `schema.py`, `sync.py`,
+  `normalizers.py`. The top-level `fund_data.py` stays as a
+  re-export facade so every existing
+  `from scripts import fund_data; fund_data.snapshot(...)` and
+  every CLI/MCP entry point continues to work. RFC draft
+  pending review.
+- **fund_managers fund-centric link view** — KNOWN_GAPS #5.
+  Either upgrade the Investoday key to ¥45 基础包
+  (unlocks `/fund-manager/basic-info` L1, ~200 calls/min,
+  structured JSON) and bulk-import, or schedule a one-shot
+  9 h AkShare run on cron. The data shape is small; the
+  work is provider onboarding.
+- **`refresh_fund_type` nightly automation** — KNOWN_GAPS #6.
+  Wire `scripts/refresh_fund_type.py` into the nightly sync
+  so new funds land with a real type from day one.
+- **`AkshareProvider.snapshot`** — closes the 380
+  `sync_failures` row gap; pairs with KNOWN_GAPS #3.
+- **`coverage_report` `EXPECTED_EMPTY` matrix as a
+  data-driven artifact** — currently a flat dict in
+  `scripts/coverage_report.py`; the 0.3.0 plan is to lift
+  it into `docs/fund-data-inventory.md` as the canonical
+  source and have the script import it. See follow-up note
+  in commit `55cb6be`.
+
+### Carried forward from 0.2.0 (KNOWN_GAPS)
+
+- **`docs/KNOWN_GAPS.md`** is the live inventory. Items
+  #1, #5, #6, #7, #8 are still open at the 0.2.0 → 0.2.1
+  boundary; #2, #3, #4 were reclassified during the
+  2026-06-02 docs sync (see the "Status as of 2026-06-02"
+  block at the top of that file).
+
+### Deferred indefinitely
+
+Multi-currency / FX conversion, live NAV streaming, Tushare
+onboarding. See `docs/KNOWN_GAPS.md` "Items not in 0.3.0
+scope" for the full list and the rationale.
+
+## 0.2.1 (2026-06-02)
+
+Post-0.2.0 cleanup patch. The 0.2.0 release was functionally
+shipped on 2026-06-01; this release rolls up the same-day
+follow-ups that were not in the original tag. No behavior
+break — every change is additive or fixes a wrong-but-unused
+default. The agent contract (`fund_mcp.py` tools, CLI flags,
+JSON schemas) is forward-compatible.
+
+### Added
+
+- **`install_skill.py status` now reports `STALE_COPY`** —
+  compares the version + content hash of the installed
+  `SKILL.md` against the repo and surfaces a one-line
+  refresh hint when they diverge. New outcomes: `MISSING`,
+  `LINKED`, `STALE_COPY` (version or hash diff), `INSTALLED`,
+  `BROKEN`. 6 new unit tests; the previous version just printed
+  `INSTALLED — <path>` regardless of drift. The Codex install
+  (which had silently been on 0.1.0 while the repo was 0.2.0)
+  was refreshed as part of this release.
+- **`doctor.py` gains two new top-level checks** —
+  `default_db` reports which database agents will actually
+  open (`fund_data.default_db_path()` resolver, with
+  `source` tagged as `env_override` / `cloud_cache` /
+  `full_local` / `unknown`), and `cloud_cache` reports the
+  installed bundle version vs the remote manifest's
+  `update_available` flag. `--db` now defaults to
+  `fund_data.default_db_path()` so `sync_failures` /
+  `coverage` / `backfill_stale` match what agents see
+  (previously, doctor reported the on-disk full DB while
+  agents wrote to the cloud query cache — see
+  `fund-data/AGENTS.md` "Long-running pitfalls"). 11 new
+  unit tests; the top-level schema is pinned by
+  `MainOutputSchemaTests.EXPECTED_TOP_LEVEL_KEYS` so any
+  future refactor that drops a key fails CI.
+- **`coverage_report.py` separates actionable missing from
+  structural empty** — the global 49 % "missing stock_holdings"
+  figure was inflated by every 货币型 / 债券型 / 指数型-固收 /
+  FOF / REITs fund that is structurally not supposed to
+  have equity. A new `EXPECTED_EMPTY` matrix
+  (7 fund_type × 9 dataset rules) splits each fund's
+  `missing` list into `actionable_missing` (real backfill
+  work) and `structural_empty` (expected by design).
+  `adjusted_completeness` is recomputed against the
+  reduced denominator so a fully-populated 货币型 scores
+  100 % instead of 75 %. The matrix itself is dumped into
+  the markdown / table output so the reader does not have
+  to cross-reference `docs/fund-data-inventory.md`.
+  18 new unit tests; total suite 233 → 262.
+- **MCP `SERVER_VERSION` bumped to 0.2.0** — was still
+  `0.1.0` while SKILL.md had moved to 0.2.0, so
+  `initialize` responses lied about the on-disk contract.
+
+### Fixed
+
+- **`COVERAGE_DATASETS` had a stale `industries` (plural)
+  entry** — `fund_data.coverage_report` has always emitted
+  the key as `industry` (singular), so the previous
+  per-dataset markdown aggregate silently skipped the
+  industry_allocations column. Aligned to the API.
+
+### Docs
+
+- `README.md` — version badge 0.1.0 → 0.2.0, line count
+  3.4k → 3.6k, test count 148 → 227, CI row adds
+  `nightly.yml`, `sync_failures` row points at
+  `doctor.py` (the previous "0" was a DB-dependent
+  number, not a constant).
+- `docs/nightly-ci-design.md` — top "Status: design only,
+  no workflow wired up yet" → "Status: shipped
+  (2026-06-01), see `.github/workflows/nightly.yml`".
+  The workflow has existed since 0.2.0 but the doc
+  had not caught up.
+- `docs/KNOWN_GAPS.md` — adds a "Status as of 2026-06-02"
+  block at the top of the 0.3.0 candidates list. #2
+  (fees) shipped (now 100 %); #3 (snapshots) partially
+  shipped (95.7 %, blocked on `AkshareProvider.snapshot`
+  — AGENTS.md follow-up #3); #4 (splits) is structural,
+  not actionable.
+- `run_tests.sh` top comment 178 → 227.
+
 ## 0.2.0 (2026-06-01)
 
 The "data layer is actually production-grade" release. SQLite WAL

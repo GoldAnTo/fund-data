@@ -476,6 +476,37 @@ oss://fund-data-public-l/fund-data/current/manifest.json
 - MCP 工具描述质量 / `--json` 输出 / exit code 重要于 CLI 漂亮度
 - `doctor.py` 是 agent 进新环境的"自检入口",要保持稳定 + 全面
 
+### 9.7 Structural-empty matrix(fund_type × dataset)
+
+**这块就是 §9.5 第 9 行"后端份额类 snapshot 380 个失败 已结案" + 第 10 行"货币型基金被批量 sync 浪费 IO"在 dataset 维度的精确化版本。**
+
+不是所有的"missing"都是 backfill 没跑通——有些是监管 / 产品形态决定的"就不该有"。`scripts/coverage_report.py` 的 `EXPECTED_EMPTY` 矩阵把这个区分硬编码出来,让 agent 跟 reader 不用每次 re-derive。**这一节是矩阵的规范来源;脚本里的 dict 是镜像,改两边要同时改。**
+
+| fund_type | stock_holdings | bond_holdings | industry_allocations | 备注 |
+|---|---|---|---|---|
+| 货币型 | ✅ 0 (no equity) | ❌ expected | ✅ 0 (no industry) | 现金等价物,没股票/行业 |
+| 债券型 | ✅ 0 (no equity) | ❌ expected | ✅ 0 (no industry) | 纯债,没股票/行业 |
+| 指数型-固收 | ✅ 0 (bond index) | ❌ expected | ✅ 0 | 固收指数 |
+| 指数型 (general) | ✅ 0 (大多数) | ⚠️ 76% | ✅ 0 | 多数固收子型,股票子型罕见 |
+| FOF | ✅ 0 (fund-of-fund) | ✅ 0 (fund-of-fund) | ✅ 0 (fund-of-fund) | 持其他基金,不是直接持仓;schema 不存 underlying |
+| REITs | ✅ 0 (different regime) | ✅ 0 (different regime) | ✅ 0 | 监管口径不同,无公开披露 |
+| QDII | ⚠️ 7% | ⚠️ 65% | ✅ 0 | 海外上市,CN schema 行业配置缺 |
+| 混合型 | ❌ expected | ❌ expected | ❌ expected | 啥都持,没有 structural empty |
+| 股票型 | ❌ expected | ⚠️ 27% | ❌ expected | 多数纯股,但有偏债子型 |
+| (unknown) | ❌ expected | ❌ expected | ❌ expected | 2024 新基金未分类,保守按"应该有" |
+
+**图例**:✅ = matrix 里 hard-coded 为 structural empty(不计入 adjusted_completeness);❌ = matrix 里**不**算 structural(missing 都算 actionable);⚠️ = 不在 matrix 里,但 inventory §9 数字显示大部分是 0,要 backfill。
+
+**生效方式**:
+- `scripts/coverage_report.py` `_is_structural_empty(fund_type, dataset)` 前缀匹配
+- 输出 split 成 `actionable_missing` (真实 backfill 工作) vs `structural_empty` (informational)
+- `adjusted_completeness` 重新算,分母去掉 structural slots
+
+**含义**:
+- 全局 49% "missing stock_holdings" 实际 = 13,195 / 26,953 中 "股票型" 应有股票持仓的子集;货币型/债券型/指数型-固收/FOF/REITs/QDII 大部分根本不算分子
+- agent 误报 "completeness < 0.5" 会被这拆分辨掉,真实 actionable gap 大概 5-8% (380 sync failures + 一些零散的)
+- splits (2%) 全局:不算 structural empty——分裂是历史事实,基金历史没分裂就是 0 行,不是 expected
+
 ---
 
 ## 10. 相关文档

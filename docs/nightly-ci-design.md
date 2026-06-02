@@ -56,17 +56,40 @@ wait.
 
 ## 3. Pipeline
 
-Four steps, each with an agent-friendly contract. The runner
-is a single shell script that captures stdout/stderr per step
-and produces a single JSON summary at the end that the
-workflow gate and the alert hooks read.
+**Five steps** as of 2026-06-02 (a pre-flight was added when
+the gate grew the cloud-pull DB bootstrap; the four core
+data-plane checks are unchanged). Each step has an
+agent-friendly contract. The runner is a single shell
+script that captures stdout/stderr per step and produces a
+single JSON summary at the end that the workflow gate and
+the alert hooks read.
 
 | # | Step | Command | Pass criteria |
 |---|------|---------|---------------|
-| 1 | **doctor** | `fund_cli.py doctor --skip-network --output /tmp/doctor.json` | exit 0 AND every `checks[*].ok == true` |
-| 2 | **build-bundle** | `fund_cli.py cloud build-bundle --output-dir dist/releases/$(date +%F-%H%M%S) --manifest-output dist/current/manifest.json --output /tmp/build.json` | exit 0 AND `manifest.query_db.sha256` is present |
-| 3 | **upload** | `fund_cli.py cloud upload --release-dir <from step 2> --manifest <from step 2> --output /tmp/upload.json` | exit 0 AND every `uploaded[*].remote` is on `oss://fund-data-public-l/` |
-| 4 | **pull-and-verify** | `fund_cli.py cloud pull --manifest-url <manifest_url> --cache-dir /tmp/nightly-cache --output /tmp/pull.json` | exit 0 AND `pull.integrity_verified == true` AND `pull.sha256 == step 2 sha256` |
+| 0 | **pre-flight: pull query DB** | `fund_cli.py cloud pull --cache-dir /tmp/nightly-cache --output /tmp/cloud-pull-init.json` | exit 0 AND `/tmp/nightly-cache/releases/<ver>/fund_data_query.sqlite` exists AND `current.json` pointer is updated |
+| 1 | **doctor** | `fund_cli.py doctor --skip-network --skip-sync-state --output /tmp/nightly-doctor.json` | exit 0 AND every `checks[*].ok == true` (note `--skip-sync-state` is required: the query DB excludes `raw_responses` / `sync_runs` / `sync_failures` per `fund_cloud.EXCLUDED_TABLES`) |
+| 2 | **build-bundle** | `fund_cli.py cloud build-bundle --source-db <from step 0> --output-dir /tmp/nightly-release --manifest-output /tmp/nightly-release/manifest.json --output /tmp/nightly-build.json` | exit 0 AND `manifest.query_db.sha256` is present |
+| 3 | **upload** | `fund_cli.py cloud upload --release-dir /tmp/nightly-release --manifest /tmp/nightly-release/manifest.json --output /tmp/nightly-upload.json` | exit 0 AND every `uploaded[*].remote` is on `oss://fund-data-public-l/` |
+| 4 | **pull-and-verify** | `fund_cli.py cloud pull --manifest-url <manifest_url> --cache-dir /tmp/nightly-cache --output /tmp/nightly-pull.json` | exit 0 AND `pull.integrity_verified == true` AND `pull.sha256 == step 2 sha256` |
+
+**Why a pre-flight is required**: the runner starts on a
+clean checkout with no `fund_data.sqlite` on disk. The 5.4 GB
+full DB is gitignored. Step 0 pulls the much smaller
+(~50–100 MB) `fund_data_query.sqlite` from the project OSS
+bucket, lands it in `/tmp/nightly-cache`, and updates
+`current.json` so `fund_data.default_db_path()` (used by
+doctor, build-bundle, and the runner's own `--db`
+resolution) resolves to that file. Without step 0 the four
+core steps all `FileNotFoundError` on the source DB.
+
+**Why `--skip-sync-state` is required on doctor**: the
+query bundle excludes `raw_responses` / `sync_runs` /
+`sync_failures` (see `fund_cloud.EXCLUDED_TABLES`). Doctor's
+`sync_failures` / `coverage` / `backfill_stale` checks all
+`SELECT COUNT(*)` from these tables and would fail with
+`no such table`. The flag short-circuits those three
+checks; the gate is verifying the data plane, not the
+operator's local sync state, so this is the right shape.
 
 If any step fails, the workflow exits 1 and posts the failed
 step's `*.json` as an artifact (`nightly-doctor-fail.json`,
