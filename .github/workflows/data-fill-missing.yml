@@ -135,19 +135,26 @@ jobs:
         run: |
           # bond_holdings is the largest gap (~11k funds). Run
           # it first so the longer run has the most wall-clock
-          # headroom under the 4-hour job timeout.
+          # headroom under the 4-hour job timeout. The
+          # ``batch-sync`` subcommand does not accept ``--output``;
+          # we capture the JSON envelope via redirect. The
+          # envelope is the *last* JSON object printed, so we
+          # trim everything before the first ``{`` to be safe.
           python fund-data/scripts/fund_cli.py batch-sync \
             --codes-file /tmp/missing-bonds.txt \
             --include-bonds \
             --provider akshare \
             --concurrency 4 \
             --batch-id fill-bonds-$(date -u +%Y%m%d) \
-            --output /tmp/fill-bonds.json
-          python -c "
-          import json
-          r = json.load(open('/tmp/fill-bonds.json'))
-          print('bonds ok=', r.get('ok'), 'failed=', r.get('failed'))
-          "
+            > /tmp/fill-bonds.out 2>&1
+          rc=$?
+          echo "exit_code=$rc"
+          # Extract the JSON envelope (last ``{...}`` block) for
+          # the artifact. The first 4-step envelope is fine for
+          # batch-sync -- it is the same shape as
+          # nightly_health_check.stdout.
+          awk '/^\{/{p=1} p' /tmp/fill-bonds.out > /tmp/fill-bonds.json
+          tail -1 /tmp/fill-bonds.out || true
 
       - name: fill-stock-holdings
         env:
@@ -160,12 +167,11 @@ jobs:
             --provider akshare \
             --concurrency 4 \
             --batch-id fill-holdings-$(date -u +%Y%m%d) \
-            --output /tmp/fill-holdings.json
-          python -c "
-          import json
-          r = json.load(open('/tmp/fill-holdings.json'))
-          print('holdings ok=', r.get('ok'), 'failed=', r.get('failed'))
-          "
+            > /tmp/fill-holdings.out 2>&1
+          rc=$?
+          echo "exit_code=$rc"
+          awk '/^\{/{p=1} p' /tmp/fill-holdings.out > /tmp/fill-holdings.json
+          tail -1 /tmp/fill-holdings.out || true
 
       - name: fill-industry
         env:
@@ -178,12 +184,11 @@ jobs:
             --provider akshare \
             --concurrency 4 \
             --batch-id fill-industries-$(date -u +%Y%m%d) \
-            --output /tmp/fill-industries.json
-          python -c "
-          import json
-          r = json.load(open('/tmp/fill-industries.json'))
-          print('industries ok=', r.get('ok'), 'failed=', r.get('failed'))
-          "
+            > /tmp/fill-industries.out 2>&1
+          rc=$?
+          echo "exit_code=$rc"
+          awk '/^\{/{p=1} p' /tmp/fill-industries.out > /tmp/fill-industries.json
+          tail -1 /tmp/fill-industries.out || true
 
       - name: summary
         env:
