@@ -61,6 +61,23 @@ class InvestodayProvider:
             data = response.read().decode("utf-8", errors="replace")
         return json.loads(data)
 
+    def _post_json(self, path: str, params: dict[str, Any]) -> Any:
+        url = f"{self.base_url}{path}"
+        body = json.dumps(params).encode("utf-8")
+        request = Request(
+            url,
+            data=body,
+            headers={
+                "apiKey": self.api_key,
+                "User-Agent": "fund-data-skill",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urlopen(request, timeout=30) as response:
+            data = response.read().decode("utf-8", errors="replace")
+        return json.loads(data)
+
     @staticmethod
     def _normalize_fund_record(item: dict[str, Any]) -> dict[str, Any] | None:
         code = normalizers._first_value(item, "fundCode", "fund_code", "code", "FCODE", "基金代码")
@@ -271,5 +288,50 @@ class InvestodayProvider:
                 }
             )
         return rows
+
+    def bond_holdings(
+        self, code: str, *, report_year: str | None = None
+    ) -> list[dict[str, Any]]:
+        records = normalizers._extract_payload_records(
+            self._post_json(
+                "/fund/portfolio-bond-holdings",
+                {"fundCode": normalizers.normalize_fund_code(code)},
+            )
+        )
+        rows = []
+        for item in records:
+            bond_name = normalizers._first_value(item, "bondName")
+            if not bond_name:
+                continue
+            bond_id = normalizers._first_value(item, "bondId")
+            rank = normalizers._first_value(item, "rnk") or "0"
+            bond_code = f"{normalizers.normalize_fund_code(code)}-B{rank}"
+            rows.append(
+                {
+                    "report_period": str(
+                        normalizers._first_value(item, "date", "report_date") or report_year or ""
+                    )[:10],
+                    "bond_code": bond_code,
+                    "bond_name": str(bond_name),
+                    "net_value_ratio": normalizers._to_float(
+                        normalizers._first_value(item, "weightNavPct", "占净值比例"),
+                        percent=True,
+                    ),
+                    "market_value": normalizers._to_float(
+                        normalizers._first_value(item, "marketValue", "市值")
+                    ),
+                    "source": "investoday.fund_portfolio_bond_holdings",
+                }
+            )
+        return rows
+
+    def industry_allocations(
+        self, code: str, *, report_year: str | None = None
+    ) -> list[dict[str, Any]]:
+        # Investoday has no industry allocation endpoint (only the reverse:
+        # fund/industry-hold-fund → "which funds hold this industry").
+        # Return empty so the provider chain falls through to AkShare,
+        # which has the forward call but is currently broken upstream.
+        return []
 
 
