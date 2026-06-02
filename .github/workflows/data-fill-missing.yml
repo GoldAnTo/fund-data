@@ -1,0 +1,203 @@
+name: data-fill-missing
+
+# Periodic runner that pulls actionable-missing rows from
+# the local full SQLite (on the runner) into the same DB.
+#
+# Actionable missing = funds whose dataset row count is 0
+# AND whose fund_type does not structurally expect that
+# dataset to be empty (per the EXPECTED_EMPTY matrix in
+# ``fund-data/scripts/coverage_report.py``).
+#
+# Why this is its own workflow, not a step in
+# ``nightly-data-plane-gate``:
+#   - The fill is a *long* batch-sync across ~13k funds for
+#     bonds and ~3k for industries. The gate's 15-minute
+#     timeout is the right ceiling for the publish path, not
+#     for the fill.
+#   - The fill is best-effort: a transient AkShare 5xx is
+#     retryable but should not block the OSS publish gate.
+#     A nightly pull on the next day naturally catches any
+#     rows the previous fill missed.
+#   - Local development on macOS hits a P2P CDN that pins
+#     Eastmoney's hostname to a LAN-resident IP. The Linux
+#     runner is unaffected, so the fill moves out of the
+#     developer's "I have to wait six hours" critical path.
+#
+# Schedule: 19:00 UTC = 03:00 Asia/Shanghai, parallel to the
+# data-plane gate. New schedules can be added if the fill
+# does not finish inside the 4-hour job timeout.
+#
+# Credentials: same OSS_DEPLOY_KEY_ID / OSS_DEPLOY_KEY_SECRET
+# as the gate (read-only, used for `cloud pull`).
+#
+# TODO(0.4.0): ship the filled DB back to OSS as a private
+# archive, or stream row batches to OSS directly via
+# ``fund_data.batch_sync_funds`` so the runner's 14 GB
+# ephemeral disk is not the limit.
+
+on:
+  schedule:
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: data-fill-missing
+  cancel-in-progress: false
+
+jobs:
+  fill-missing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: install-runtime-deps
+        run: |
+          python -m pip install -q -r requirements.txt
+
+      - name: install-ossutil
+        run: |
+          # Same dance as nightly-data-plane-gate -- pinned
+          # asset name + flattened unzip. See the gate for the
+          # full note on the v1.7.18 zip layout gotcha.
+          curl -sSL -o /tmp/ossutil.zip \
+            https://github.com/aliyun/ossutil/releases/download/v1.7.18/ossutil-v1.7.18-linux-amd64.zip
+          unzip -jq /tmp/ossutil.zip -d /tmp/ossutil
+          sudo mv /tmp/ossutil/ossutil /usr/local/bin/ossutil
+          rm -rf /tmp/ossutil /tmp/ossutil.zip
+          ossutil --version
+
+      - name: configure-ossutil-deploy-key
+        run: |
+          rm -rf ~/.ossutilconfig
+          cat > ~/.ossutilconfig <<EOF
+          [Credentials]
+          accessKeyID=${{ secrets.OSS_DEPLOY_KEY_ID }}
+          accessKeySecret=${{ secrets.OSS_DEPLOY_KEY_SECRET }}
+          region=cn-shanghai
+          endpoint=https://oss-cn-shanghai.aliyuncs.com
+          EOF
+          chmod 600 ~/.ossutilconfig
+          ossutil ls oss://fund-data-public-l/ | head -3
+
+      - name: pull-full-db
+        # The actionable-missing query joins on fund_type and
+        # per-dataset tables. The query-only cloud bundle strips
+        # the operator-side tables but keeps all 11 business
+        # tables, which is exactly what we need to compute the
+        # gap. The query bundle is also tiny (<100 MB) compared
+        # to the 5.4 GB full DB so the pull is fast.
+        env:
+          FUND_DATA_CACHE_DIR: /tmp/fill-cache
+        run: |
+          mkdir -p "$FUND_DATA_CACHE_DIR"
+          python fund-data/scripts/fund_cli.py cloud pull \
+            --cache-dir "$FUND_DATA_CACHE_DIR" \
+            --output /tmp/fill-cloud-pull.json
+          ls -la "$FUND_DATA_CACHE_DIR"
+          # Quick sanity: confirm funds + at least one
+          # business-dataset table is present.
+          python -c "
+          import sqlite3, json
+          meta = json.load(open('$FUND_DATA_CACHE_DIR/current.json'))
+          con = sqlite3.connect(meta['db_path'])
+          n_funds = con.execute('SELECT COUNT(*) FROM funds').fetchone()[0]
+          n_ind   = con.execute('SELECT COUNT(*) FROM industry_allocations').fetchone()[0]
+          print(f'funds={n_funds} industry_rows={n_ind}')
+          "
+
+      - name: enumerate-actionable-missing
+        env:
+          PYTHONPATH: fund-data
+          FUND_DATA_CACHE_DIR: /tmp/fill-cache
+        run: |
+          # Reuse coverage_report.EXPECTED_EMPTY as the single
+          # source of truth for "structural empty per fund_type".
+          # See fund-data/scripts/find_actionable_missing.py.
+          DB=$(python -c "import json,os; m=json.load(open(os.environ['FUND_DATA_CACHE_DIR']+'/current.json')); print(m['db_path'])")
+          for ds in holdings bonds industries; do
+            python fund-data/scripts/find_actionable_missing.py \
+              --dataset "$ds" --db "$DB" --output "/tmp/missing-${ds}.txt"
+          done
+          ls -la /tmp/missing-*.txt
+
+      - name: fill-bond-holdings
+        env:
+          FUND_DATA_CACHE_DIR: /tmp/fill-cache
+          PYTHONPATH: fund-data
+        run: |
+          # bond_holdings is the largest gap (~11k funds). Run
+          # it first so the longer run has the most wall-clock
+          # headroom under the 4-hour job timeout.
+          python fund-data/scripts/fund_cli.py batch-sync \
+            --codes-file /tmp/missing-bonds.txt \
+            --include-bonds \
+            --provider akshare \
+            --concurrency 4 \
+            --batch-id fill-bonds-$(date -u +%Y%m%d) \
+            --output /tmp/fill-bonds.json
+          python -c "
+          import json
+          r = json.load(open('/tmp/fill-bonds.json'))
+          print('bonds ok=', r.get('ok'), 'failed=', r.get('failed'))
+          "
+
+      - name: fill-stock-holdings
+        env:
+          FUND_DATA_CACHE_DIR: /tmp/fill-cache
+          PYTHONPATH: fund-data
+        run: |
+          python fund-data/scripts/fund_cli.py batch-sync \
+            --codes-file /tmp/missing-holdings.txt \
+            --include-holdings \
+            --provider akshare \
+            --concurrency 4 \
+            --batch-id fill-holdings-$(date -u +%Y%m%d) \
+            --output /tmp/fill-holdings.json
+          python -c "
+          import json
+          r = json.load(open('/tmp/fill-holdings.json'))
+          print('holdings ok=', r.get('ok'), 'failed=', r.get('failed'))
+          "
+
+      - name: fill-industry
+        env:
+          FUND_DATA_CACHE_DIR: /tmp/fill-cache
+          PYTHONPATH: fund-data
+        run: |
+          python fund-data/scripts/fund_cli.py batch-sync \
+            --codes-file /tmp/missing-industries.txt \
+            --include-industries \
+            --provider akshare \
+            --concurrency 4 \
+            --batch-id fill-industries-$(date -u +%Y%m%d) \
+            --output /tmp/fill-industries.json
+          python -c "
+          import json
+          r = json.load(open('/tmp/fill-industries.json'))
+          print('industries ok=', r.get('ok'), 'failed=', r.get('failed'))
+          "
+
+      - name: summary
+        env:
+          FUND_DATA_CACHE_DIR: /tmp/fill-cache
+          PYTHONPATH: fund-data
+        run: |
+          DB=$(python -c "import json,os; m=json.load(open(os.environ['FUND_DATA_CACHE_DIR']+'/current.json')); print(m['db_path'])")
+          echo "--- post-fill coverage ---"
+          python fund-data/scripts/coverage_report.py --db "$DB" | head -20
+
+      - name: upload-artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-fill-missing-${{ github.run_id }}
+          path: /tmp/fill-*.json
+          retention-days: 14
