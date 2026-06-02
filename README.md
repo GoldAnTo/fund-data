@@ -20,20 +20,26 @@ data without re-deriving the parsing logic every time.
 > Architecture reference: [`fund-data/ARCHITECTURE.md`](fund-data/ARCHITECTURE.md).
 > Provider onboarding: [`fund-data/PROVIDERS.md`](fund-data/PROVIDERS.md).
 
-## Status (v0.1.0)
+## Status (v0.2.0)
 
 | | |
 |---|---|
-| Core library | `fund-data/scripts/fund_data.py` (≈3.0k lines) |
+| Core library | `fund-data/scripts/fund_data.py` (≈3.4k lines) |
 | CLI | `fund-data/scripts/fund_cli.py` |
-| Tests | **103 unit tests**, all green |
+| Tests | **148 unit tests**, all green (Python 3.11 / 3.12 / 3.13) |
 | Default DB | `fund-data/data/fund_data.sqlite` (gitignored; rebuild on first run) |
-| Providers | Eastmoney (no key) → AkShare (optional) → Tushare (`TUSHARE_TOKEN`) → Investoday (`INVESTDATA_API_KEY`) |
-| Fund universe | 26,936 funds on first seed |
-| Snapshot coverage | 14,907 / 26,936 = **55.34 %** (Eastmoney backfill in progress) |
-| NAV coverage | 14,859 unique funds / 26,936 = **55.16 %** |
-| Profile coverage | 26,632 / 26,936 = **98.87 %** (Investoday `/fund/all`) |
-| CI | test.yml (3.11 / 3.12 / 3.13) + lint.yml (ruff / black) + sync.yml (nightly 02:00 UTC) |
+| Providers | Eastmoney (no key) → AkShare (optional) → Tushare (`TUSHARE_TOKEN`) → Investoday (`INVESTODAY_API_KEY`) |
+| Fund universe | 26,953 funds on first seed |
+| Snapshot coverage | 26,935 / 26,953 = **99.93 %** (Eastmoney `pingzhongdata`) |
+| NAV coverage | 26,300 unique funds / 26,953 = **97.58 %** (Eastmoney NAV history) |
+| Profile coverage | 26,650 / 26,953 = **98.88 %** (Investoday `/fund/all`) |
+| Stock holdings coverage | 13,195 / 26,953 = **48.95 %** (AkShare `fund_portfolio_hold_em`) |
+| Bond holdings coverage | 15,369 / 26,953 = **57.01 %** (AkShare) |
+| Industry allocation coverage | 13,247 / 26,953 = **49.14 %** (AkShare) |
+| Fee coverage | 26,929 / 26,953 = **99.90 %** (AkShare + Eastmoney page fallback) |
+| Fund manager records | 4,055 distinct managers, 34,654 manager-fund rows |
+| `sync_failures` | **0** (last merge of query bundle v2026-06-02-130900) |
+| CI | test.yml (3.11 / 3.12 / 3.13) + lint.yml (ruff / black) + sync.yml (nightly 02:00 UTC) + release.yml + security.yml |
 | License | MIT |
 | Versioning | [Semantic Versioning 2.0](https://semver.org/) (0.x is allowed to break in minor) |
 
@@ -232,32 +238,37 @@ fixtures — no network required. The same command runs in CI on Python
     │   ├── retry_failures.py
     │   ├── coverage_report.py
     │   ├── install_skill.py
-    │   └── tests/           # 103 unittest cases
+    │   └── tests/           # 148 unittest cases
     └── data/                # SQLite DB + watchlist files (gitignored)
 ```
 
-## Known gaps (tracked for 0.2.0)
+## Known gaps (tracked for 0.3.0)
 
 These are the items the team is actively working through. They are
 listed in priority order, not all of them are blockers.
 
-1. **Profile / holdings / fees coverage sits at 1.8 – 2.7 %** for the
-   AkShare-only capabilities (holdings / bonds / industries /
-   fees / dividends / splits / managers). Profile is already at
-   98.87 % via `scripts/investoday_profile_sync.py` (Investoday
-   `/fund/all`); the rest of the L2 portfolio-* family needs a
-   higher Investoday tier (see `PROVIDERS.md`) or a `TUSHARE_TOKEN`.
-2. **148 rows in `sync_failures`** at the time of writing. Most are
-   benign (currency funds with no holdings, ETF profile endpoints
-   that Eastmoney never implemented). Drain with
-   `python3 fund-data/scripts/retry_failures.py --provider eastmoney --limit 200`
-   after the nightly backfill settles.
-3. **No `--verbose` / JSON log flag on `fund_cli.py`.** Lines are
-   pretty-printed for humans. An agent-friendly `--json` flag is
-   queued for 0.2.0.
+1. **Holdings / bonds / industry coverage sits at 49 – 57 %** for
+   AkShare's `fund_portfolio_*_em` endpoints. The remaining gap is
+   mostly **后端 (B/C share) classes** that Eastmoney / AkShare
+   don't expose holdings for. Profile is at 98.88 % via
+   `scripts/investoday_profile_sync.py`; for higher-fidelity
+   holdings, upgrade to Investoday's L2 portfolio-* set (see
+   `PROVIDERS.md`) or wire a `TUSHARE_TOKEN`.
+2. **Dividend (28 %) and split (2 %) coverage** is naturally low:
+   most funds have never paid out / split. Don't treat the gap as
+   a bug.
+3. **Eastmoney has no `profile()` / `holdings()` / `fees()`**
+   implementations on the direct provider; we fall back to
+   AkShare for those capabilities, which adds AkShare's free-tier
+   latency. The nightly `sync.yml` workflow reruns the gap queue
+   daily.
 4. **No HTTP/SSE MCP transport.** The current MCP server is stdio-only,
    which matches local agent clients. A Streamable HTTP wrapper can land
    later if remote clients need it.
+5. **`--json` log flag on `fund_cli.py` is on the v0.3.0 backlog**.
+   The `doctor` and `cloud build-bundle` / `cloud pull` subcommands
+   already emit structured JSON; the per-fund commands (list,
+   search, nav, snapshot, profile, …) still pretty-print for humans.
 
 ## Safety
 
