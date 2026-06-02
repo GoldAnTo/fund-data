@@ -56,8 +56,8 @@ def default_db_path() -> Path:
     if configured and not cache_dir:
         return Path(configured)
     try:
-        from . import fund_cloud
-    except ImportError:  # pragma: no cover - direct script execution
+        from .. import fund_cloud
+    except ImportError:  # pragma: no cover - direct script execution / top-level package import
         import fund_cloud  # type: ignore
     bootstrap = fund_cloud.ensure_project_bundle(cache_dir=cache_dir)
     bootstrap_db = bootstrap.get("db_path")

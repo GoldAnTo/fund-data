@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -176,6 +177,40 @@ class DefaultDbPathPrecedenceTests(unittest.TestCase):
             "fund_cloud.current_db_path", return_value=None
         ):
             self.assertEqual(paths.default_db_path(), paths.DEFAULT_DB_PATH)
+
+
+class PythonPackageImportTests(unittest.TestCase):
+    def test_scripts_package_import_can_resolve_default_db_path(self) -> None:
+        # The local skill often gets embedded from the repo root as
+        # ``PYTHONPATH=fund-data``. Keep that import mode working even
+        # though the CLI imports sibling modules from ``fund-data/scripts``.
+        with tempfile.TemporaryDirectory() as cache_dir:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(SCRIPT_DIR.parent)
+            env["FUND_DATA_AUTO_PULL"] = "0"
+            env["FUND_DATA_CACHE_DIR"] = cache_dir
+            env.pop("FUND_DATA_DB", None)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "from scripts import fund_data; "
+                        "print(fund_data.default_db_path().name)"
+                    ),
+                ],
+                cwd=SCRIPT_DIR.parent.parent,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(
+            result.returncode,
+            0,
+            result.stderr or result.stdout,
+        )
+        self.assertIn("fund_data.sqlite", result.stdout)
 
 
 if __name__ == "__main__":
