@@ -29,6 +29,13 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
+# Apply the macOS proxy / IPv4 / sqlite-timeout patches BEFORE
+# importing :mod:`fund_data` (or any module that might open a
+# connection).  Idempotent so a re-import is cheap.
+from _net_compat import apply as _apply_net_compat  # noqa: E402
+
+_apply_net_compat()
+
 import fund_data  # noqa: E402
 
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"
