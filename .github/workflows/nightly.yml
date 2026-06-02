@@ -68,7 +68,8 @@ jobs:
 
       - name: configure-ossutil-deploy-key
         run: |
-          mkdir -p ~/.ossutilconfig
+          # ossutil 1.7.x: ~/.ossutilconfig must be a regular file, not a dir
+          rm -rf ~/.ossutilconfig
           cat > ~/.ossutilconfig <<EOF
           [default]
           accessKeyId=${{ secrets.OSS_DEPLOY_KEY_ID }}
