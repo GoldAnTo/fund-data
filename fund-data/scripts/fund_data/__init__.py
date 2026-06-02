@@ -19,227 +19,32 @@ from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+# 0.3.0 split (RFC docs/superpowers/specs/2026-06-02-fund-data-0.3-split.md):
+# paths + schema migrations have been lifted to submodules. The legacy
+# 3605-line file is now this __init__.py; the public name set is
+# unchanged (every `from scripts import fund_data; fund_data.foo`
+# site keeps working).
+from .paths import (
+    DEFAULT_DB_PATH,
+    PROVIDER_AUTO,
+    PROVIDER_EASTMONEY,
+    PROVIDER_AKSHARE,
+    PROVIDER_INVESTODAY,
+    PROVIDER_TUSHARE,
+    default_db_path,
+    utc_now,
+)
+from .schema.migrations import (
+    FUND_DATA_SCHEMA_VERSION,
+    MIGRATIONS,
+    _migration_001_add_industry_allocations_market_value,
+    _migration_002_add_fee_structures_fee_text,
+    _migration_003_add_fee_structures_discount_fee,
+    _migration_004_add_fee_structures_discount_fee_text,
+    _migration_005_align_column_order,
+)
+
 logger = logging.getLogger("fund_data")
-
-DEFAULT_DB_PATH = Path(__file__).resolve().parents[1] / "data" / "fund_data.sqlite"
-PROVIDER_AUTO = "auto"
-PROVIDER_EASTMONEY = "eastmoney"
-PROVIDER_AKSHARE = "akshare"
-PROVIDER_INVESTODAY = "investoday"
-PROVIDER_TUSHARE = "tushare"
-
-
-def default_db_path() -> Path:
-    """Resolve the on-disk path to use when no ``db_path=`` is passed.
-
-    Precedence (intentionally narrow):
-      1. ``FUND_DATA_CACHE_DIR`` — explicit cloud-cache override,
-         useful when an agent/CI also sets a temporary ``FUND_DATA_DB``.
-      2. ``FUND_DATA_DB`` env var — explicit local override
-         (typically test or one-off dev runs).
-      3. ``fund_cloud.ensure_project_bundle()`` — install or reuse
-         the project OSS query DB unless ``FUND_DATA_AUTO_PULL=0``.
-         ``FUND_DATA_CACHE_DIR`` controls where that cache lives.
-      4. ``fund_cloud.current_db_path()`` — the installed query DB,
-         picked up automatically when the bundle has a current.json.
-      5. ``DEFAULT_DB_PATH`` — the on-disk fallback
-         (``fund-data/data/fund_data.sqlite``).
-    """
-    cache_dir = os.environ.get("FUND_DATA_CACHE_DIR")
-    configured = os.environ.get("FUND_DATA_DB")
-    if configured and not cache_dir:
-        return Path(configured)
-    try:
-        from . import fund_cloud
-    except ImportError:  # pragma: no cover - direct script execution
-        import fund_cloud  # type: ignore
-    bootstrap = fund_cloud.ensure_project_bundle(cache_dir=cache_dir)
-    bootstrap_db = bootstrap.get("db_path")
-    if bootstrap_db and Path(bootstrap_db).is_file():
-        return Path(bootstrap_db)
-    cloud_db = fund_cloud.current_db_path()
-    return cloud_db or DEFAULT_DB_PATH
-
-
-def utc_now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
-
-
-# --- schema migrations -----------------------------------------------------
-#
-# Each entry is ``(version, callable)``. ``ensure_schema`` reads
-# ``PRAGMA user_version`` and applies every migration whose version
-# is greater than the current user_version, in ascending order. After
-# each successful migration it records the version in
-# ``schema_migrations`` and bumps the pragma.
-#
-# Adding a new migration:
-#   1. Append ``(N, _migration_NNN_short_description)`` to MIGRATIONS.
-#   2. Add a regression test in test_fund_data.py that runs
-#      ``ensure_schema`` against a v(N-1) DB and asserts the new
-#      shape.
-#   3. Bump FUND_DATA_SCHEMA_VERSION in any consumer code that caches
-#      the version (currently nothing does).
-#
-# Never renumber or remove an existing migration — old DBs depend on
-# each version being applied exactly once, in order.
-
-
-def _migration_001_add_industry_allocations_market_value(conn: sqlite3.Connection) -> None:
-    """v1: add ``industry_allocations.market_value`` for AkShare's
-    industry weighting breakdown."""
-    columns = {row["name"] for row in conn.execute("pragma table_info(industry_allocations)")}
-    if "market_value" not in columns:
-        conn.execute("alter table industry_allocations add column market_value real")
-
-
-def _migration_002_add_fee_structures_fee_text(conn: sqlite3.Connection) -> None:
-    """v2: add ``fee_structures.fee_text`` so the AkShare page scraper
-    can persist its human-readable fee strings alongside the decimal
-    value."""
-    columns = {row["name"] for row in conn.execute("pragma table_info(fee_structures)")}
-    if "fee_text" not in columns:
-        conn.execute("alter table fee_structures add column fee_text text")
-
-
-def _migration_003_add_fee_structures_discount_fee(conn: sqlite3.Connection) -> None:
-    """v3: add ``fee_structures.discount_fee`` to carry the discounted
-    fee (e.g. promo rate) alongside the list price."""
-    columns = {row["name"] for row in conn.execute("pragma table_info(fee_structures)")}
-    if "discount_fee" not in columns:
-        conn.execute("alter table fee_structures add column discount_fee real")
-
-
-def _migration_004_add_fee_structures_discount_fee_text(conn: sqlite3.Connection) -> None:
-    """v4: add ``fee_structures.discount_fee_text`` to carry the
-    human-readable discounted fee string."""
-    columns = {row["name"] for row in conn.execute("pragma table_info(fee_structures)")}
-    if "discount_fee_text" not in columns:
-        conn.execute("alter table fee_structures add column discount_fee_text text")
-
-
-# Schema for the v5-rebuild step. See
-# ``_migration_005_align_column_order`` for the rationale.
-_INDUSTRY_ALLOCATIONS_CANONICAL_DDL = """\
-CREATE TABLE {new_name} (
-    fund_code text not null,
-    report_period text not null,
-    industry_name text not null,
-    net_value_ratio real,
-    source text,
-    fetched_at text not null,
-    market_value real,
-    primary key (fund_code, report_period, industry_name)
-)
-"""
-
-_FEE_STRUCTURES_CANONICAL_DDL = """\
-CREATE TABLE {new_name} (
-    fund_code text not null,
-    fee_type text not null,
-    condition_name text not null,
-    fee real,
-    source text,
-    fetched_at text not null,
-    fee_text text,
-    discount_fee real,
-    discount_fee_text text,
-    primary key (fund_code, fee_type, condition_name)
-)
-"""
-
-
-def _migration_005_align_column_order(conn: sqlite3.Connection) -> None:
-    """v5: align the column order of ``industry_allocations`` and
-    ``fee_structures`` with the canonical ``ensure_schema`` definition.
-
-    Why: the four v1-v4 migrations add ``market_value`` (industry)
-    and ``fee_text`` / ``discount_fee`` / ``discount_fee_text`` (fee)
-    via ``ALTER TABLE ... ADD COLUMN``, which SQLite always appends
-    to the end of the column list. The canonical ``ensure_schema``
-    block, however, declared these columns in the *middle* of the
-    table. So a fresh DB had the new order, while a DB that had been
-    upgraded through v1-v4 had the old order. The 2026-06-02 Akshare
-    bulk run hit a schema-drift incident because of this: the
-    separate (temp) DB was created against the canonical schema, the
-    main DB had the post-migration order, and ``INSERT INTO
-    main.{table} SELECT * FROM sep.{table}`` failed with
-    "table X has N values but M columns were supplied".
-
-    Fix:
-
-    1. The canonical ``ensure_schema`` block is updated to declare
-       the new columns at the end (matching what ALTER TABLE
-       produces), so a fresh DB and a migrated DB now have the same
-       column order from day one.
-    2. For DBs that already exist with the old (mid-table) order,
-       this migration recreates the affected tables in the canonical
-       order, preserving data via ``INSERT INTO new SELECT FROM old``
-       wrapped in a transaction. Both tables are rebuildable from
-       AkShare / Tushare, so the data-loss surface is small.
-
-    The rebuild is a no-op when the table is already in canonical
-    order, so re-running ``ensure_schema`` on an already-migrated
-    DB is cheap.
-    """
-    rebuilds = [
-        (
-            "industry_allocations",
-            _INDUSTRY_ALLOCATIONS_CANONICAL_DDL,
-            [
-                "fund_code", "report_period", "industry_name",
-                "net_value_ratio", "source", "fetched_at", "market_value",
-            ],
-        ),
-        (
-            "fee_structures",
-            _FEE_STRUCTURES_CANONICAL_DDL,
-            [
-                "fund_code", "fee_type", "condition_name",
-                "fee", "source", "fetched_at",
-                "fee_text", "discount_fee", "discount_fee_text",
-            ],
-        ),
-    ]
-    for table, ddl_template, select_cols in rebuilds:
-        current = [row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-        if current == select_cols:
-            # Already canonical -- nothing to do.
-            continue
-        # Sanity: the column *set* must be identical, otherwise the
-        # user has a DB whose schema has drifted beyond reordering
-        # (e.g. a column was added/removed out of band). Refusing is
-        # the right call -- silently dropping/adding columns would
-        # be worse than a clear RuntimeError on first open.
-        if set(current) != set(select_cols):
-            raise RuntimeError(
-                f"refusing to migrate {table}: column set differs "
-                f"between DB and canonical schema "
-                f"(db={current!r}, canonical={select_cols!r})"
-            )
-        new_name = f"{table}__v5_align"
-        ddl = ddl_template.format(new_name=new_name)
-        select_list = ", ".join(select_cols)
-        conn.executescript(
-            f"""
-            {ddl};
-            INSERT INTO {new_name} ({select_list})
-                SELECT {select_list} FROM {table};
-            DROP TABLE {table};
-            ALTER TABLE {new_name} RENAME TO {table};
-            """
-        )
-
-
-MIGRATIONS: list[tuple[int, Any]] = [
-    (1, _migration_001_add_industry_allocations_market_value),
-    (2, _migration_002_add_fee_structures_fee_text),
-    (3, _migration_003_add_fee_structures_discount_fee),
-    (4, _migration_004_add_fee_structures_discount_fee_text),
-    (5, _migration_005_align_column_order),
-]
-
-FUND_DATA_SCHEMA_VERSION = max(version for version, _fn in MIGRATIONS)
 
 
 def normalize_fund_code(value: str) -> str:
