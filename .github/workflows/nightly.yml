@@ -19,6 +19,13 @@ on:
     - cron: '0 19 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: nightly-gate
+  # Don't cancel in-progress runs on new trigger -- the nightly
+  # backfill is long and we want it to finish, not restart.
+  # New dispatch requests will queue until the in-progress run ends.
+  cancel-in-progress: false
+
 jobs:
   nightly-gate:
     runs-on: ubuntu-latest
