@@ -21,7 +21,8 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
-from .. import normalizers
+from .. import http, normalizers, parsers
+from ..http import FundDataClient
 from ..paths import PROVIDER_AKSHARE
 from .base import ProviderError
 
@@ -31,19 +32,29 @@ __all__ = ["AkshareProvider"]
 class AkshareProvider:
     name = PROVIDER_AKSHARE
 
-    def __init__(self, ak_module: Any | None = None) -> None:
+    def __init__(
+        self,
+        ak_module: Any | None = None,
+        client: FundDataClient | None = None,
+    ) -> None:
         if ak_module is None and os.environ.get("FUND_DATA_DISABLE_AKSHARE") == "1":
             raise ProviderError("akshare is disabled by FUND_DATA_DISABLE_AKSHARE=1")
         if ak_module is not None:
             self.ak = ak_module
-            return
-        try:
-            import akshare as ak  # type: ignore
-        except Exception as exc:
-            raise ProviderError(
-                "akshare is not installed; run `python3 -m pip install akshare`"
-            ) from exc
-        self.ak = ak
+        else:
+            try:
+                import akshare as ak  # type: ignore
+            except Exception as exc:
+                raise ProviderError(
+                    "akshare is not installed; run `python3 -m pip install akshare`"
+                ) from exc
+            self.ak = ak
+        # Lazy FundDataClient: the Eastmoney direct endpoint is the
+        # fallback target of :meth:`nav_history` when AkShare's V8
+        # eval explodes on Eastmoney CDN-injected JS garbage. The
+        # client is dependency-free (stdlib urllib only -- see
+        # :mod:`http`), so constructing it is cheap.
+        self.client = client or FundDataClient()
 
     def search_funds(self, keyword: str) -> list[dict[str, Any]]:
         keyword_text = str(keyword).lower()
@@ -91,12 +102,53 @@ class AkshareProvider:
         page: int = 1,
         per: int = 20,
     ) -> list[dict[str, Any]]:
-        del page, per
-        raw_rows = normalizers._records(
-            self.ak.fund_open_fund_info_em(
-                symbol=normalizers.normalize_fund_code(code), indicator="单位净值走势"
+        normalized = normalizers.normalize_fund_code(code)
+        try:
+            raw_rows = normalizers._records(
+                self.ak.fund_open_fund_info_em(
+                    symbol=normalized, indicator="单位净值走势"
+                )
             )
-        )
+        except Exception as exc:
+            # AkShare's V8 eval (py_mini_racer) over the
+            # ``pingzhongdata/{code}.js`` body can fail in two ways
+            # that come from Eastmoney's CDN, not from our code:
+            #
+            #   1. ``ReferenceError: Data_netWorthTrend is not
+            #      defined`` -- the JS header that declares the
+            #      ``var Data_netWorthTrend = [...]`` block has
+            #      been truncated or had garbage injected before
+            #      it (CDN/WAF noise).
+            #   2. ``SyntaxError: Unexpected token '<'`` --
+            #      Eastmoney returned an HTML error page (5xx or
+            #      rate-limit) and py_mini_racer's V8 sees a ``<``
+            #      outside any JS context.
+            #
+            # Both manifest in
+            # ``sync_failures.operation='batch-sync'`` /
+            # ``provider='akshare'`` with the message
+            # ``all providers failed for nav_history: akshare: ...``
+            # (553/562 rows on 2026-06-03). When the ``fund_cli
+            # batch-sync --provider akshare`` path or a cron job
+            # uses Akshare as the explicit provider, the chain
+            # does not fall through to Eastmoney, so the only
+            # way to recover is to do the fallback inside this
+            # method. The fallback hits
+            # ``https://fundf10.eastmoney.com/F10DataApi.aspx``
+            # via :class:`FundDataClient` + :func:`parse_nav_history`
+            # -- the same URL and parser
+            # :class:`EastmoneyProvider` uses, so we keep one
+            # canonical NAV path.
+            err = str(exc)
+            if "ReferenceError" in err or "SyntaxError" in err:
+                return self._nav_history_fallback(
+                    normalized,
+                    start_date=start_date,
+                    end_date=end_date,
+                    page=page,
+                    per=per,
+                )
+            raise
         rows: list[dict[str, Any]] = []
         for item in raw_rows:
             nav_date = str(item.get("净值日期") or item.get("日期") or "")
@@ -116,6 +168,58 @@ class AkshareProvider:
                     "source": "akshare.fund_open_fund_info_em",
                 }
             )
+        rows.sort(key=lambda row: row["nav_date"], reverse=True)
+        return rows
+
+    def _nav_history_fallback(
+        self,
+        code: str,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        page: int = 1,
+        per: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Recover from AkShare V8 eval failures via
+        :class:`FundDataClient` + :func:`parse_nav_history`.
+
+        The fallback URL is
+        ``https://fundf10.eastmoney.com/F10DataApi.aspx`` -- the
+        same endpoint :class:`EastmoneyProvider` uses -- and the
+        ``content:"<table>"`` regex parser is robust to the CDN
+        noise that breaks ``py_mini_racer``. The source tag on
+        every row is rewritten to make it obvious in the
+        ``nav_history`` table that the data came from the
+        fallback path (and to keep the regression test
+        pinpointing the branch).
+
+        Any exception from the Eastmoney direct path is
+        re-raised as :class:`ProviderError` so the failure
+        surfaces in ``run_provider_chain`` (and from there in
+        ``sync_failures``) under a uniform shape (rather than
+        leaking the raw ``RuntimeError`` from the ``urllib``
+        layer).
+        """
+        try:
+            raw = self.client.nav_history(
+                code,
+                start_date=start_date,
+                end_date=end_date,
+                page=page,
+                per=per,
+            )
+            rows = parsers.parse_nav_history(raw)
+        except Exception as exc:
+            raise ProviderError(
+                f"akshare fallback to eastmoney F10DataApi also failed: {exc}"
+            ) from exc
+        for row in rows:
+            row["source"] = "akshare.fallback.eastmoney.f10dataapi"
+        # Match the main-path ordering so callers do not have
+        # to know which branch produced the rows. Eastmoney's
+        # F10DataApi.aspx returns rows in HTML-document order
+        # (typically descending, but not guaranteed), so sort
+        # explicitly.
         rows.sort(key=lambda row: row["nav_date"], reverse=True)
         return rows
 
