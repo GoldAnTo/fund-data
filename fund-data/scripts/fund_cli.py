@@ -10,10 +10,13 @@ from pathlib import Path
 
 try:
     from . import fund_cloud, fund_data
+    from . import doctor as doctor_module
 except ImportError:  # pragma: no cover - exercised by direct script execution
     import fund_cloud
 
     import fund_data
+
+    import doctor as doctor_module  # type: ignore[no-redef]
 
 
 PROVIDER_CHOICES = ["auto", "eastmoney", "akshare", "investoday", "tushare"]
@@ -229,6 +232,26 @@ def build_parser() -> argparse.ArgumentParser:
     coverage = subparsers.add_parser("coverage", help="Show local data coverage by fund")
     coverage.add_argument("--fund-code")
     _add_common_db_arg(coverage)
+
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Run the environment health check (db, akshare, providers, "
+        "sync_failures, coverage). Always emits JSON on stdout -- "
+        "agent-friendly; the exit code mirrors the overall ok flag.",
+    )
+    doctor.add_argument("--db", help="SQLite path. Defaults to fund-data/data/fund_data.sqlite")
+    doctor.add_argument("--venv", help="AkShare virtual environment path")
+    doctor.add_argument(
+        "--skip-network",
+        action="store_true",
+        help="Skip the live Eastmoney reachability probe (useful in CI).",
+    )
+    doctor.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Compact JSON (no indent) and skip the human-readable FAIL banner.",
+    )
+    doctor.add_argument("--output", help="Write the JSON report to this file instead of stdout")
 
     coverage_report = subparsers.add_parser(
         "coverage-report",
@@ -528,6 +551,20 @@ def main(argv: list[str] | None = None) -> int:
             rows = fund_data.coverage_rows(db_path=args.db, fund_code=args.fund_code)
             _print_json(rows)
             return 0
+
+        if args.command == "doctor":
+            argv = []
+            if args.db:
+                argv.extend(["--db", args.db])
+            if args.venv:
+                argv.extend(["--venv", args.venv])
+            if args.skip_network:
+                argv.append("--skip-network")
+            if args.quiet:
+                argv.append("--quiet")
+            if args.output:
+                argv.extend(["--output", args.output])
+            return doctor_module.main(argv)
 
         if args.command == "coverage-report":
             codes: list[str] = []
