@@ -1,598 +1,218 @@
-# Fund MCP Server Playbook
+# Fund MCP Server 剧本（Playbook）
 
-> **Last updated:** 2026-06-02
-> **Audience:** Anyone — human or AI — who gets asked "how does
-> the `fund-data` MCP server work?", "how do I add a tool?", or
-> "why did my client get `INVALID_PARAMS` / `isError: true`?".
-> This is the **answer script** for the MCP surface. Pair with
-> [`fund-mcp-server-pipeline.md`](./fund-mcp-server-pipeline.md)
-> for diagrams and code anchors.
+> **最后更新:** 2026-06-02
+> **目标读者:** 任何人 —— 人或 AI —— 被问到"fund-data 的 MCP server 是怎么工作的？"、"怎么加 tool？"或"为什么我的 client 拿到 `INVALID_PARAMS` / `isError: true`？"。这是 **MCP 表面的回答脚本**。配套 [`fund-mcp-server-pipeline.md`](./fund-mcp-server-pipeline.md)（图表 + 代码锚点）一起看。
 >
-> **Use it when:**
-> - Onboarding a new contributor or agent to the MCP surface.
-> - Reviewing a PR that touches `fund_mcp.py`, the
->   `TOOLS` list, `TOOL_HANDLERS`, or `handle_message`.
-> - Debugging a report of "the agent can't see the tools" or
->   "the agent's call returned no rows" or "the agent's call
->   raised `INVALID_PARAMS`".
-> - Fielding a question about MCP compatibility with a
->   specific client (OpenClaw, Codex, Claude Code, custom).
-> - Adding a new tool to the catalogue.
+> **使用场景:**
+> - onboarding 新 contributor 或 agent 进入 MCP 表面。
+> - 审查涉及 `fund_mcp.py`、`TOOLS` 列表、`TOOL_HANDLERS` 或 `handle_message` 的 PR。
+> - 排查"agent 看不到 tools"或"agent 调用返回空"或"agent 调用抛 `INVALID_PARAMS`"这类报告。
+> - 回答关于 MCP 跟特定 client（OpenClaw、Codex、Claude Code、自定义）兼容性的问题。
+> - 在工具目录里加新 tool。
 >
-> **Do NOT use it when:**
-> - The question is about a specific tool's data semantics →
->   use [`fund-search-playbook.md`](./fund-search-playbook.md)
->   or [`fund-batch-sync-playbook.md`](./fund-batch-sync-playbook.md).
-> - The question is about the underlying Python library →
->   use [`fund-data/ARCHITECTURE.md`](../../fund-data/ARCHITECTURE.md).
-> - The question is about installing the MCP server into a
->   specific agent platform → use
->   [`fund-data/SKILLS.md`](../../fund-data/SKILLS.md).
+> **不在使用场景之内:**
+> - 问题是关于某个 tool 的数据语义 → 用 [`fund-search-playbook.md`](./fund-search-playbook.md) 或 [`fund-batch-sync-playbook.md`](./fund-batch-sync-playbook.md)。
+> - 问题是关于底层 Python 库 → 用 [`fund-data/ARCHITECTURE.md`](../../fund-data/ARCHITECTURE.md)。
+> - 问题是关于把 MCP server 装到特定 agent 平台 → 用 [`fund-data/SKILLS.md`](../../fund-data/SKILLS.md)。
 
 ---
 
-## TL;DR (60-second answer)
+## 60 秒答案（TL;DR）
 
-The `fund-data` MCP server is a **dependency-free, single-file
-JSON-RPC 2.0 server over stdin/stdout** that exposes 17 tools
-wrapping the local `fund_data` Python library. It has four
-protocol methods (`initialize`, `ping`, `tools/list`,
-`tools/call`), a fixed tool set (no dynamic registration), and
-two error shapes (JSON-RPC errors for protocol violations; tool
-results with `isError: true` for application failures). Every
-tool except `fund_cloud_status` triggers a cloud bootstrap on
-first call if the agent did not pass `db` explicitly.
+`fund-data` 的 MCP server 是一个 **零依赖、单文件、跑在 stdin/stdout 上的 JSON-RPC 2.0 server**，把 17 个 tool 暴露给消费本地 `fund_data` Python 库的 agent。它实现了四个协议方法（`initialize`、`ping`、`tools/list`、`tools/call`），有一组固定的 tool（没有动态注册），两种错误形态（JSON-RPC 错误表示协议违反；`isError: true` 表示应用失败）。除了 `fund_cloud_status` 之外，每个 tool 在第一次调用时，如果 agent 没显式传 `db`，就会触发 cloud bootstrap。
 
-The defining characteristics are:
+定义性特征：
 
-- **No dependencies beyond the Python standard library.**
-  The server has no third-party packages. If `fund_data` and
-  `fund_cloud` import successfully, the server runs.
-- **stdio transport only.** The server is a subprocess; the
-  client spawns it, talks JSON over stdin/stdout, kills it
-  when done. No sockets, no HTTP, no daemon.
-- **Capability: tools only.** No resources, no prompts, no
-  sampling. The `capabilities` field in `initialize` is
-  `{"tools": {"listChanged": false}}`.
-- **17 tools, fixed for the life of the process.** Adding a
-  tool requires a server restart (the `TOOLS` list is a
-  module-level constant).
+- **零依赖**。Server 不依赖 Python 标准库之外的任何包。如果 `fund_data` 和 `fund_cloud` 成功 import，server 就跑。
+- **仅 stdio transport。** Server 是一个子进程；client spawn 它，通过 stdin/stdout 谈 JSON，需要时杀它。没有 socket，没有 HTTP，没有 daemon。
+- **能力：只 tool。** 没有 resources、prompts、sampling。`initialize` 里的 `capabilities` 字段是 `{"tools": {"listChanged": false}}`。
+- **17 个 tool，进程生命周期内固定。** 加 tool 要改代码 + 重启 server（`TOOLS` 列表是模块级常量）。
 
 ---
 
-## The full answer template (use this skeleton)
+## 完整回答模板（用这个骨架）
 
-When asked "how does the `fund-data` MCP server work?",
-structure the answer in **four paragraphs**, one per layer.
-Order matters — it matches the runtime call order from the
-client's perspective.
+当被问到"fund-data 的 MCP server 是怎么工作的？"，按这个结构回答，**四段对应四层**。顺序重要 —— 跟 client 视角的运行时调用顺序一致。
 
-### Paragraph 1 — Transport
+### 第 1 段 —— Transport
 
-> The server is a single Python process that the client spawns
-> as a subprocess. Communication is **newline-delimited
-> JSON-RPC 2.0 over stdin and stdout** — one JSON object per
-> line on each side, no length-prefix framing. The server
-> runs a `for line in sys.stdin` loop in `main()` (line 644)
-> that parses each line, dispatches via `handle_message`, and
-> writes the response to stdout. stderr is free for logs;
-> stdout is **strictly** JSON-RPC responses only. An
-> accidental `print()` to stdout from a tool handler will
-> break every MCP client immediately because the next
-> client's line parser will choke on the stray text.
+> Server 是 client 当作子进程 spawn 的单个 Python 进程。通信是 **stdin 和 stdout 上以换行符分隔的 JSON-RPC 2.0** —— 每边每行一个 JSON 对象，没有长度前缀 framing。Server 在 `main()`（line 644）里跑一个 `for line in sys.stdin` 循环，解析每行，通过 `handle_message` 分发，把响应写到 stdout。stderr 给日志用；stdout **严格**只放 JSON-RPC 响应。Tool handler 里意外往 stdout `print()` 会立即打破每个 MCP client，因为下一个 client 的行解析器会被杂散文本噎住。
 
-### Paragraph 2 — Protocol
+### 第 2 段 —— Protocol
 
-> The server implements four methods. **`initialize`** is
-> the first call a client must make; it returns the
-> negotiated `protocolVersion` (one of `2024-11-05`,
-> `2025-03-26`, `2025-06-18`, `2025-11-25`, with `2025-06-18`
-> as the default fallback), the server's `capabilities` —
-> `{"tools": {"listChanged": false}}` — the `serverInfo`
-> (name `fund-data`, version `0.2.0`), and an `instructions`
-> string. **`ping`** returns `{}` for health checks.
-> **`tools/list`** returns the 17 tool dicts, each with
-> `name`, `description`, and `inputSchema` (the schema
-> declares `additionalProperties: false`, so unknown fields
-> are rejected with `INVALID_PARAMS`). **`tools/call`** is
-> the workhorse — it dispatches to one of the 17
-> `TOOL_HANDLERS` based on `params.name`. The server does
-> not implement `resources/*`, `prompts/*`, or any
-> `notifications/*` from the client.
+> Server 实现了四个方法。**`initialize`** 是 client 必须先发的调用；它返回协商好的 `protocolVersion`（`2024-11-05`、`2025-03-26`、`2025-06-18`、`2025-11-25` 之一，默认 fallback `2025-06-18`），server 的 `capabilities` —— `{"tools": {"listChanged": false}}`，`serverInfo`（name `fund-data`，version `0.2.0`），和一个 `instructions` 字符串。**`ping`** 返回 `{}` 用作健康检查。**`tools/list`** 返回 17 个 tool 字典，每个有 `name`、`description` 和 `inputSchema`（schema 声明 `additionalProperties: false`，所以未知字段会用 `INVALID_PARAMS` 拒绝）。**`tools/call`** 是干活的 —— 它根据 `params.name` 分发到 17 个 `TOOL_HANDLERS` 之一。Server 不实现 `resources/*`、`prompts/*` 或 client 来的任何 `notifications/*`。
 
-### Paragraph 3 — Tool dispatch and the cloud bootstrap
+### 第 3 段 —— Tool dispatch 和 cloud bootstrap
 
-> For every `tools/call` except `fund_cloud_status`, the
-> server calls `_maybe_bootstrap_cloud(arguments)` before
-> the tool handler. The bootstrap is skipped if the agent
-> passed `db` in the tool arguments; otherwise it runs
-> `fund_cloud.ensure_project_bundle()`, which pulls the
-> OSS query bundle (or reuses the cache, or falls back
-> gracefully if the network is down — see the search
-> playbook Q2 for the full failure policy). The handler
-> then runs against the resolved DB path. `TypeError` /
-> `ValueError` from the handler become JSON-RPC
-> `INVALID_PARAMS` (argument validation failures);
-> any other exception becomes a tool result with
-> `isError: true` (application failures). Successful
-> results return the `content` + `structuredContent`
-> triple — see the next paragraph.
+> 对每个 `tools/call`（`fund_cloud_status` 除外），server 在 tool handler 之前调 `_maybe_bootstrap_cloud(arguments)`。如果 agent 在 tool 参数里传了 `db`，bootstrap 跳过；否则它跑 `fund_cloud.ensure_project_bundle()`，那个函数会拉 OSS query bundle（或复用 cache，或者网络挂了安静 fallback —— 完整失败策略见 search playbook Q2）。Handler 然后对解析出来的 DB 路径执行。Handler 抛的 `TypeError` / `ValueError` 变成 JSON-RPC `INVALID_PARAMS`（参数验证失败）；任何其他异常变成 `isError: true` 的 tool 结果（应用失败）。成功结果返回 `content` + `structuredContent` 三件套 —— 见下段。
 
-### Paragraph 4 — Result envelope
+### 第 4 段 —— Result envelope
 
-> Every successful `tools/call` response has three fields.
-> **`content`** is a list with one text block:
-> `{"type": "text", "text": "<JSON dump of the payload>"}`.
-> For list payloads (e.g. `fund_search` rows), the dump
-> is `json.dumps(rows, ensure_ascii=False, indent=2)` —
-> human-readable, with Chinese fund names rendered as-is.
-> **`structuredContent`** is the machine-typed payload:
-> for lists it is `{"rows": [...], "count": N}`; for
-> dicts it is the dict itself. **`isError`** is the
-> success flag — `true` for application errors, with
-> the `text` field carrying `{"error": "<message>"}`.
-> Clients that respect the MCP spec can read
-> `structuredContent` directly without re-parsing the
-> text. Clients that map `isError: true` to a JSON-RPC
-> retry will get into a loop, because the next call
-> returns the same error.
+> 每个成功的 `tools/call` 响应有三个字段。**`content`** 是一个 text block 列表：`{"type": "text", "text": "<payload 的 JSON dump>"}`。对于列表 payload（比如 `fund_search` rows），dump 是 `json.dumps(rows, ensure_ascii=False, indent=2)` —— 人类可读，中文基金名原样渲染。**`structuredContent`** 是机器类型化的 payload：列表是 `{"rows": [...], "count": N}`；字典就是字典本身。**`isError`** 是成功标志 —— `true` 表示应用错误，`text` 字段带 `{"error": "<message>"}`。尊重 MCP 规范的 client 可以直接读 `structuredContent`，不用重新解析 text。把 `isError: true` 映射到 JSON-RPC 重试的 client 会进入循环，因为下一次调用返回同样的错误。
 
 ---
 
-## The 12 most-asked questions (with full answers)
+## 12 个最常被问到的问题（含详细答案 + 为什么这么设计）
 
-These are the questions that come up the most in onboarding,
-support, and PR review. **Answer them in the order they appear
-here, with the same level of detail** — these are the
-explanations the team has settled on after multiple rounds of
-"but why?".
+下面这些问题是在 onboarding、support、PR review 中最常出现的。**按这里出现的顺序回答，用同样的详细程度** —— 这些是团队经过多轮"但为什么？"之后沉淀下来的解释。
 
-### Q1. Why is the server a single stdio process with no dependencies?
+### Q1. 为什么 server 是单一 stdio 进程，零依赖？
 
-- **The MCP stdio transport is the universal baseline.** Every
-  MCP-capable client (OpenClaw, Codex, Claude Code, the
-  reference SDKs) knows how to spawn a subprocess and pipe
-  JSON. A stdio server "just works" everywhere; a socket
-  server needs per-platform plumbing.
-- **No dependencies means no version drift.** The server
-  imports only `json`, `sys`, `pathlib`, `typing`, and the
-  in-tree `fund_data` / `fund_cloud` modules. An
-  OpenClaw on Python 3.11 and a Codex on Python 3.13 run
-  the same server. There is no `pip install mcp` step.
-- **The trade-off is no HTTP / SSE transport.** A remote
-  agent that cannot spawn a local subprocess has no way
-  to call the server. The team is tracking a Streamable
-  HTTP wrapper for v0.3.0.
+- **MCP stdio transport 是通用基线。** 每个支持 MCP 的 client（OpenClaw、Codex、Claude Code、参考 SDK）都知道怎么 spawn 一个子进程然后 pipe JSON。用 stdio 的 server 在哪都"开箱即用"；用 socket 的 server 需要 per-platform plumbing。
+- **零依赖意味着没版本漂移。** Server 只 import `json`、`sys`、`pathlib`、`typing`，以及 in-tree 的 `fund_data` / `fund_cloud` 模块。Python 3.11 上的 OpenClaw 和 Python 3.13 上的 Codex 跑的是同一个 server。没有 `pip install mcp` 这步。
+- **代价是没 HTTP / SSE transport。** 一个不能 spawn 本地子进程的远程 agent 没法调 server。团队在 v0.3.0 backlog 跟踪 Streamable HTTP wrapper。
 
-### Q2. Why are there two error shapes (JSON-RPC error vs `isError: true`)?
+### Q2. 为什么有两种错误形态（JSON-RPC error vs `isError: true`）？
 
-- **JSON-RPC errors are for protocol violations.** The
-  client sent something the server cannot interpret —
-  a parse error, an unknown method, a missing required
-  field, a type mismatch. The client should fix the
-  call, not retry it. The error code (`-32700` /
-  `-32600` / `-32601` / `-32602` / `-32603`) is
-  standard JSON-RPC and most clients map it to
-  "developer error".
-- **`isError: true` is for application failures.** The
-  client sent a valid call and the server tried to
-  honour it; the call failed because the provider chain
-  raised, or the SQLite write failed, or the network
-  was down. The client should decide whether to retry
-  (often yes — a network blip is transient) or to
-  surface the error (often yes — a missing fund is not
-  transient).
-- **Mixing the two would force one policy on the other.**
-  A client that auto-retries JSON-RPC errors will spam
-  the server with malformed calls. A client that does
-  not retry `isError: true` will lose data on transient
-  blips. The two shapes let each client pick the
-  policy that fits.
+- **JSON-RPC 错误是为协议违反。** Client 发了 server 没法解释的东西 —— 解析错误、未知方法、缺失必填字段、类型不匹配。Client 应该修调用，不该重试。错误码（`-32700` / `-32600` / `-32601` / `-32602` / `-32603`）是标准 JSON-RPC，大多数 client 把它映射到"开发者错误"。
+- **`isError: true` 是为应用失败。** Client 发了有效调用，server 试了 honoring 它；调用失败因为 provider 链抛了，或 SQLite 写失败，或网络挂了。Client 应该决定是否重试（通常是 —— 网络闪断是瞬时的）还是 surface 错误（通常是 —— 找不到基金不是瞬时的）。
+- **混了两种会让一种策略绑到另一种上。** 自动重试 JSON-RPC 错误的 client 会用畸形调用 spam server。不重试 `isError: true` 的 client 会在瞬时闪断时丢数据。两种形态让每个 client 选适合的策略。
 
-### Q3. Why does every tool except `fund_cloud_status` trigger the cloud bootstrap?
+### Q3. 为什么除了 `fund_cloud_status` 之外的每个 tool 都会触发 cloud bootstrap？
 
-- **The bootstrap is "free infrastructure".** The
-  `fund_data_query.sqlite.gz` bundle on OSS is the team's
-  effort to save agents from running a 21-hour AkShare
-  backfill on first install. If the bundle is reachable,
-  the agent gets a pre-populated DB in seconds. If not,
-  the agent falls back to live providers.
-- **The trigger is per-tool, not per-process.** Each
-  tool call independently decides whether to bootstrap,
-  based on whether `db` was passed. An agent that wants
-  to pin the DB once and reuse it should pass `db` on
-  every call; the cost of repeating the argument is
-  cheap and the cost of an accidental cache write is
-  high.
-- **`fund_cloud_status` does not trigger the bootstrap
-  because it *is* the bootstrap introspection.** A
-  client that wants to inspect the cache state before
-  any other call should call `fund_cloud_status` first;
-  triggering the bootstrap to answer a question about
-  the bootstrap would be circular. The cache directory
-  is queried directly via `fund_cloud.status()`.
+- **Bootstrap 是"免费基础设施"。** OSS 上的 `fund_data_query.sqlite.gz` bundle 是团队努力的结果，让 agent 不用在首次安装时跑 21 小时 AkShare backfill。如果 bundle 能到达，agent 几秒钟就拿到预填充的 DB。如果不能，agent fallback 到 live provider。
+- **触发是 per-tool 不是 per-process。** 每个 tool 调用独立决定要不要 bootstrap，根据是否传了 `db`。一个想一次 pin 住 DB 然后重用的 agent 应该在每次调用时传 `db`；重复参数的代价低，写错 DB 的代价高。
+- **`fund_cloud_status` 不触发 bootstrap 因为它 *就是* bootstrap 内省。** 一个想在做其他任何调用之前检查 cache 状态的 client 应该先调 `fund_cloud_status`；触发 bootstrap 来回答关于 bootstrap 的问题会是循环的。Cache 目录通过 `fund_cloud.status()` 直接查。
 
-### Q4. Why is `capabilities.tools.listChanged` set to `false`?
+### Q4. 为什么 `capabilities.tools.listChanged` 设为 `false`？
 
-- **The tool set is a module-level constant.** `TOOLS`
-  in `fund_mcp.py:98` is a list literal; the only way
-  to change it is to restart the server process. A
-  client that gets `listChanged: true` would expect
-  `notifications/tools/list_changed` and poll
-  `tools/list`; neither is implemented.
-- **The honest signal is more useful than a false
-  promise.** A client that respects `listChanged`
-  optimistically would call `tools/list` repeatedly
-  for no benefit. A client that respects it
-  pessimistically (or ignores it) gets the same
-  answer. `false` is the contract.
-- **The team has not ruled out dynamic registration.**
-  If a use case emerges for "register a custom tool
-  at runtime", the `listChanged` flag flips to `true`
-  and the server starts emitting notifications. Until
-  then, the simpler contract is the right one.
+- **Tool 集合是模块级常量。** `TOOLS` 在 `fund_mcp.py:98` 是一个 list literal；改它的唯一方法是重启 server 进程。一个拿到 `listChanged: true` 的 client 会期望 `notifications/tools/list_changed` 然后 poll `tools/list`；两个都没实现。
+- **诚实的信号比虚假的承诺更有用。** 一个乐观尊重 `listChanged` 的 client 会重复调 `tools/list` 没好处。一个悲观尊重它（或忽略它）的 client 得到同样的答案。`false` 是契约。
+- **团队没排除动态注册。** 如果"运行时注册自定义 tool"用例出现，`listChanged` 标志翻到 `true` 然后 server 开始发通知。在那之前，更简单的契约是对的。
 
-### Q5. Why is the protocol version negotiation "first supported wins", not "use the latest"?
+### Q5. 为什么协议版本协商是"先支持胜出"，不是"用最新的"？
 
-- **The client may be older than the server.** A
-  Codex from March 2025 only knows `2025-03-26`; if
-  the server forced `2025-11-25`, the client would
-  send messages the server cannot parse. The
-  negotiation lets the older client use its preferred
-  version as long as the server supports it.
-- **The fallback is `2025-06-18`.** That is the
-  version most clients implement as of late 2025; a
-  client that asks for an unknown version gets the
-  fallback rather than an error. The client should
-  then honour the returned version for subsequent
-  calls.
-- **The four supported versions
-  (`2024-11-05` / `2025-03-26` / `2025-06-18` /
-  `2025-11-25`) cover every shipped client.** The
-  team has not had to bump the support set since
-  the server was written; a new client that
-  requests `2026-03-01` would get the `2025-06-18`
-  fallback and work, but the team should add
-  `2026-03-01` to `SUPPORTED_PROTOCOL_VERSIONS`
-  for the next release.
+- **Client 可能比 server 老。** 一个 2025 年 3 月的 Codex 只知道 `2025-03-26`；如果 server 强制 `2025-11-25`，client 会发 server 没法解析的消息。协商让更老的 client 用它偏好的版本，只要 server 支持。
+- **Fallback 是 `2025-06-18`。** 那是 2025 年底大多数 client 实现的版本；问未知版本的 client 拿到 fallback 而不是错误。Client 应该在那之后尊重返回的版本。
+- **四个支持的版本（`2024-11-05` / `2025-03-26` / `2025-06-18` / `2025-11-25`）覆盖每个出货的 client。** 团队从 server 写好之后没需要过 bump 支持集；一个请求 `2026-03-01` 的新 client 会拿到 `2025-06-18` fallback 然后能工作，但团队应该把 `2026-03-01` 加到 `SUPPORTED_PROTOCOL_VERSIONS` 准备下次发布。
 
-### Q6. Why are tool input schemas `additionalProperties: false`?
+### Q6. 为什么 tool input schema 是 `additionalProperties: false`？
 
-- **The server rejects typos.** An agent that
-  types `keywords` instead of `keyword` gets
-  `JSONRPC_INVALID_PARAMS: ...` instead of a silent
-  empty result. The strict schema is a developer
-  ergonomics win for the agent author.
-- **The cost is forward compatibility.** Adding a
-  new field to a tool's schema is technically a
-  breaking change for clients that relied on the
-  old `additionalProperties: true` shape. The
-  team accepts this because the tool set is small
-  (17 tools) and the changelog is the source of
-  truth for what changed.
-- **`additionalProperties: false` is also the
-  MCP spec recommendation.** A client that
-  reads the schema and builds a validator
-  benefits from the explicit allow-list.
+- **Server 拒绝拼写错误。** 一个打了 `keywords` 而不是 `keyword` 的 agent 拿到 `JSONRPC_INVALID_PARAMS: ...` 而不是静默空结果。严格 schema 是 agent 作者的开发者人体工程学胜利。
+- **代价是前向兼容。** 给 tool 的 schema 加新字段，技术上对依赖旧 `additionalProperties: true` 形状的 client 是破坏性变更。团队接受这点因为 tool 集合小（17 个 tool）而且 changelog 是改了什么的事实之源。
+- **`additionalProperties: false` 也是 MCP 规范建议。** 读 schema 然后构造验证器的 client 从显式 allow-list 受益。
 
-### Q7. Why does the server not implement `resources/list` or `prompts/list`?
+### Q7. 为什么 server 不实现 `resources/list` 或 `prompts/list`？
 
-- **The team has not needed them yet.** The 17
-  tools cover the agent's data-plane needs; the
-  resource shape (`fund://funds/110022` URIs) is
-  a sugar layer on top of `fund_export` that the
-  team has not built. Prompts are an even
-  bigger layer (templating, partials,
-  placeholders) that is out of scope for v0.2.0.
-- **The `capabilities` field is the honest
-  signal.** A client that asks for `resources/list`
-  gets a `METHOD_NOT_FOUND` error rather than a
-  misleading empty list. The client should not
-  infer "the server has no resources" from a
-  missing call — it should infer "the server does
-  not implement resources" from `capabilities`.
-- **Adding resources or prompts is a clear
-  next step.** A `fund://funds/{code}` resource
-  URI mapping to `fund_export(table="funds",
-  fund_code=code)` is a 30-line change. A
-  `fund-compare` prompt that fetches three
-  funds' snapshots and asks the LLM to compare
-  them is a 50-line change. Both are tracked
-  under v0.3.0 backlog.
+- **团队目前不需要它们。** 17 个 tool 覆盖 agent 的数据平面需求；resource 形状（`fund://funds/110022` URI）是 `fund_export` 之上的糖层，团队还没建。Prompts 是更大的层（模板、partials、占位符），不在 v0.2.0 范围。
+- **`capabilities` 字段是诚实的信号。** 一个问 `resources/list` 的 client 拿到 `METHOD_NOT_FOUND` 错误而不是误导性的空列表。Client 不应该从缺失的调用推断"server 没有 resources"；应该从 `capabilities` 推断"server 没实现 resources"。
+- **加 resources 或 prompts 是清晰的下一步。** `fund://funds/{code}` resource URI 映射到 `fund_export(table="funds", fund_code=code)` 是 30 行变更。一个 `fund-compare` prompt 拉三个基金的 snapshot 然后让 LLM 比较，是 50 行变更。两个都跟踪在 v0.3.0 backlog。
 
-### Q8. Why is `content[0].text` a JSON dump, not a markdown table?
+### Q8. 为什么 `content[0].text` 是 JSON dump，不是 markdown 表格？
 
-- **JSON is the universal interchange format.**
-  Every MCP client knows how to render JSON; not
-  every client knows how to render a markdown
-  table. The text is always valid JSON, regardless
-  of the payload shape.
-- **`structuredContent` is the typed payload for
-  clients that want to render something other
-  than JSON.** A client that wants to display a
-  table can read `structuredContent.rows` and
-  format it. A client that wants to display JSON
-  can read `content[0].text` directly. Both
-  paths are supported.
-- **The dump uses `ensure_ascii=False`.** Chinese
-  fund names are rendered as-is, not as `\uXXXX`
-  escapes. A client that assumes ASCII will
-  misparse; the contract is UTF-8.
+- **JSON 是通用交换格式。** 每个 MCP client 知道怎么渲染 JSON；不是每个 client 知道怎么渲染 markdown 表格。Text 永远是有效 JSON，不管 payload 形状。
+- **`structuredContent` 是给想渲染 JSON 以外的东西的 client 的类型化 payload。** 想显示表格的 client 可以读 `structuredContent.rows` 然后格式化。想显示 JSON 的 client 可以直接读 `content[0].text`。两条路都支持。
+- **Dump 用 `ensure_ascii=False`。** 中文基金名原样渲染，不是 `\uXXXX` 转义。假设 ASCII 的 client 会解析错；契约是 UTF-8。
 
-### Q9. Why does `tools/call` only catch `TypeError` and `ValueError` as `INVALID_PARAMS`?
+### Q9. 为什么 `tools/call` 只把 `TypeError` 和 `ValueError` 当 `INVALID_PARAMS`？
 
-- **`TypeError` is the most common argument
-  validation failure.** A tool that expects a
-  string but gets `None` raises `TypeError`; a
-  tool that expects a list but gets a dict raises
-  `TypeError`. These are the agent's fault, not
-  the server's.
-- **`ValueError` is the second most common.**
-  A tool that expects a 6-digit fund code but
-  gets `"abc"` raises `ValueError("fund code
-  must contain 6 digits")`. Again, the agent's
-  fault.
-- **Any other exception is an application
-  error.** `KeyError` from a missing column in
-  a SQL response, `sqlite3.OperationalError` from
-  a locked DB, `ProviderError` from the chain —
-  these all become `isError: true` tool results.
-  The client decides whether to retry.
+- **`TypeError` 是最常见的参数验证失败。** 一个期望 string 但拿到 `None` 的 tool 抛 `TypeError`；一个期望 list 但拿到 dict 的 tool 抛 `TypeError`。这些是 agent 的错，不是 server 的错。
+- **`ValueError` 是第二常见的。** 一个期望 6 位 fund code 但拿到 `"abc"` 的 tool 抛 `ValueError("fund code must contain 6 digits")`。同样是 agent 的错。
+- **任何其他异常是应用错误。** 来自 SQL 响应缺列的 `KeyError`，锁住的 DB 来的 `sqlite3.OperationalError`，链来的 `ProviderError` —— 都变成 `isError: true` 的 tool 结果。Client 决定是否重试。
 
-### Q10. Why does the server not stream results for large tables?
+### Q10. 为什么 server 不为大表流式返回结果？
 
-- **Stdio is line-buffered.** The contract is
-  one JSON object per line. Streaming would mean
-  either multiple lines per result (which breaks
-  the line-as-message-boundary contract) or
-  multiple `content` blocks in a single response
-  (which the spec discourages for `tools/call`).
-- **`fund_export` accepts a `limit` argument.**
-  An agent that wants to walk a 26k-fund table
-  should call `fund_export` in chunks of 1000,
-  not ask for the whole table in one call.
-  The `count` field in `structuredContent` lets
-  the agent know how many rows it has.
-- **The team has not seen a use case for
-  streaming.** The largest realistic call is
-  `fund_coverage_report` over 26k funds; the
-  current call returns ~26k small rows, which
-  serialises to ~3 MB of JSON. The client can
-  handle that without streaming. A future
-  `notifications/progress` channel would help
-  the agent know the call is still working, but
-  it would not change the result delivery shape.
+- **Stdio 是行缓冲的。** 契约是每行一个 JSON 对象。流式意味着要么每次结果多行（打破行作为消息边界的契约），要么单次响应多个 `content` block（spec 对 `tools/call` 不鼓励）。
+- **`fund_export` 接受 `limit` 参数。** 想走 26k-fund 表的 agent 应该分块 1000 调 `fund_export`，而不是一次问整个表。`structuredContent` 里的 `count` 字段让 agent 知道有多少行。
+- **团队没看到流式的用例。** 最大现实调用是对 26k 基金的 `fund_coverage_report`；当前调用返回 ~26k 小行，序列化成 ~3 MB JSON。Client 不用流式也能处理。未来的 `notifications/progress` 通道会帮 agent 知道调用还在工作，但它不会改结果交付形状。
 
-### Q11. Why does the server not authenticate the client?
+### Q11. 为什么 server 不验证 client？
 
-- **The server is a local subprocess.** The
-  client that spawns the server is the one
-  with local machine access; an attacker that
-  can talk to the server's stdin already has
-  local machine access. There is no remote
-  trust boundary to enforce.
-- **The data is public.** The fund universe,
-  NAV history, and holdings are all public
-  information available from Eastmoney and
-  AkShare. There is no secret material in
-  the response payloads.
-- **Provider keys are the user's, not the
-  server's.** `INVESTODAY_API_KEY` and
-  `TUSHARE_TOKEN` live in the server's
-  environment, not in the request. An agent
-  that has the server's environment inherits
-  the keys; an agent that does not has
-  read-only access to the no-key providers.
-  This is the right trust model: the user
-  controls the keys, the agent gets what the
-  user has paid for.
-- **A future HTTP transport would need auth.**
-  Tracked under v0.3.0; the auth scheme will
-  likely be a per-session bearer token, with
-  the token shared out-of-band by the user.
+- **Server 是本地子进程。** Spawn server 的 client 就有本地机器访问权；能跟 server stdin 对话的 attacker 已经有本地机器访问权。没有远程信任边界需要强制。
+- **数据是公开的。** 基金池、NAV 历史、持仓都是 Eastmoney 和 AkShare 上的公开信息。响应 payload 里没有秘密材料。
+- **Provider key 是用户的，不是 server 的。** `INVESTODAY_API_KEY` 和 `TUSHARE_TOKEN` 在 server 的环境里，不在请求里。有 server 环境的 agent 继承 key；没有的 agent 有对 no-key provider 的只读访问。这是对的信任模型：用户控制 key，agent 拿到用户付费的范围。
+- **未来 HTTP transport 需要 auth。** 跟踪在 v0.3.0；auth 方案可能是 per-session bearer token，token 由用户带外分享。
 
-### Q12. Why does the server not implement `notifications/cancelled`?
+### Q12. 为什么 server 不实现 `notifications/cancelled`？
 
-- **The server is synchronous.** A `tools/call`
-  blocks until the handler returns; the server
-  cannot accept a `notifications/cancelled` while
-  it is blocked.
-- **The workarounds are at the client layer.**
-  A client that wants to cancel a long call
-  closes the server's stdin, which terminates
-  the subprocess. The server returns 0 from
-  `main()` on EOF; the client cleans up.
-- **The spec allows this.** Synchronous servers
-  are explicitly allowed to ignore
-  `notifications/cancelled`; the expectation is
-  that an async server would respect them. When
-  the team adds a Streamable HTTP transport, the
-  async server will implement cancellation.
+- **Server 是同步的。** 一个 `tools/call` 阻塞到 handler 返回；server 在阻塞时没法接受 `notifications/cancelled`。
+- **变通办法在 client 层。** 想取消长调用的 client 关掉 server 的 stdin，这终止子进程。Server 在 EOF 时 `main()` 返回 0；client 清理。
+- **Spec 允许这点。** 同步 server 被显式允许忽略 `notifications/cancelled`；期望是 async server 会尊重。当团队加 Streamable HTTP transport 时，async server 会实现取消。
 
 ---
 
-## Design philosophy (the "why" of the four-method shape)
+## 设计哲学（为什么四方法是这个形状）
 
-Read this section once and the rest of the playbook becomes
-obvious.
+读完这一节，剩下的 playbook 就显而易见了。
 
-1. **stdio is the universal baseline.** Every MCP client
-   knows how to spawn a subprocess. The server that uses
-   stdio "just works" everywhere; the server that uses
-   sockets needs per-platform plumbing. The team's
-   philosophy is "the simplest transport that works for
-   every client" — stdio wins.
-2. **No dependencies means no version drift.** The server
-   imports only the Python standard library and the
-   in-tree `fund_data` / `fund_cloud`. There is no
-   `pip install mcp` step, no version pin, no breakage
-   on Python minor bumps. The cost is no third-party
-   helpers (e.g. `pydantic` for schema validation); the
-   benefit is zero install.
-3. **Two error shapes for two failure policies.** JSON-RPC
-   errors are for protocol violations (developer fixes);
-   `isError: true` is for application failures (client
-   retries). Conflating them would force one policy on
-   both. The two shapes let each client decide.
-4. **The cloud bootstrap is a per-call decision, not a
-   per-process one.** An agent that wants to pin the DB
-   passes `db` on every call; an agent that wants the
-   cache default omits it. The server's `_maybe_bootstrap_cloud`
-   runs every time and is cheap (~1 ms on a cache hit).
-5. **Capabilities is the honest signal.** The server
-   declares exactly what it implements (`tools`,
-   `listChanged: false`). A client that asks for
-   resources gets a `METHOD_NOT_FOUND` and can decide
-   whether to fall back. The `capabilities` field is
-   the contract.
-6. **`content[0].text` is the universal payload,
-   `structuredContent` is the typed payload.** A client
-   that only renders text reads the text; a client
-   that wants the typed payload reads
-   `structuredContent`. Both are populated on every
-   successful call; neither is preferred.
-7. **The 17-tool set is fixed for the life of the
-   process.** Adding a tool is a code change and a
-   server restart. The team has not built a
-   "register a custom tool at runtime" API; if a use
-   case emerges, `listChanged` flips to `true` and
-   the server emits notifications. Until then, the
-   static tool set is the right shape.
+1. **Stdio 是通用基线。** 每个 MCP client 知道怎么 spawn 子进程。用 stdio 的 server 在哪都"开箱即用"；用 socket 的 server 需要 per-platform plumbing。团队的哲学是"每个 client 都能用的最简单 transport" —— stdio 赢。
+2. **零依赖意味着没版本漂移。** Server 只 import Python 标准库和 in-tree 的 `fund_data` / `fund_cloud`。没有 `pip install mcp` 这步，没有版本 pin，Python 小版本 bump 不会破。代价是没有第三方 helper（比如 `pydantic` 做 schema 验证）；收益是零安装。
+3. **两种错误形态对应两种失败策略。** JSON-RPC 错误是为协议违反（开发者修）；`isError: true` 是为应用失败（client 重试）。混起来会让一种策略绑到另一种。两种形态让每个 client 选。
+4. **Cloud bootstrap 是 per-call 决定，不是 per-process。** 想 pin DB 的 agent 在每次调用时传 `db`；想要 cache 默认的省略它。Server 的 `_maybe_bootstrap_cloud` 每次跑，cache 命中时 ~1 ms 便宜。
+5. **Capabilities 是诚实的信号。** Server 声明它实际实现的（`tools`，`listChanged: false`）。问 resources 的 client 拿到 `METHOD_NOT_FOUND` 可以决定是否 fallback。`capabilities` 字段是契约。
+6. **`content[0].text` 是通用 payload，`structuredContent` 是类型化 payload。** 只渲染 text 的 client 读 text；想要类型化 payload 的 client 读 `structuredContent`。两个在每次成功调用时都填；都不被偏好。
+7. **17 tool 集合在进程生命周期内固定。** 加 tool 是代码变更 + server 重启。团队没建"运行时注册自定义 tool"的 API；如果用例出现，`listChanged` 翻到 `true` 然后 server 发通知。在那之前，静态 tool 集合是对的形状。
 
 ---
 
-## What NOT to say (anti-patterns)
+## 反面教材（不要这么说）
 
-These are common wrong answers the team has seen in PR
-reviews and support threads. Avoid them.
+这些是 PR review 和 support 线程里见过的常见错误回答。避开它们。
 
-- **"The server is async."** It is not. The
-  `for line in sys.stdin` loop is a blocking
-  readline; a long tool call blocks the loop. A
-  client that assumes async can pipe multiple
-  calls in parallel will see them serialised.
-- **"It supports HTTP."** It does not. Stdio only.
-  A future Streamable HTTP transport is tracked
-  under v0.3.0; do not promise it today.
-- **"It supports resources and prompts."** It does
-  not. `capabilities` is `{"tools": {}}`; a client
-  that asks for `resources/list` gets
-  `METHOD_NOT_FOUND`.
-- **"Tool results are JSON."** They are a triple:
-  `content` (text JSON dump) + `structuredContent`
-  (typed payload) + `isError` (success flag).
-  Conflating the three is a common client bug.
-- **"`isError: true` means the call failed at the
-  protocol level."** No, it means the call
-  succeeded at the protocol level and the tool
-  raised at the application level. A JSON-RPC
-  error is what protocol failures look like.
-- **"The server has a `fund_doctor` tool."** It
-  does not. The v0.3.0 backlog has it; until
-  then, an agent that wants a health check has
-  to shell out to `fund-cli doctor`.
-- **"The server streams results."** It does not.
-  One JSON object per response, no chunked
-  encoding, no `notifications/progress`. An agent
-  that walks a large table should call
-  `fund_export` in chunks of 1000.
-- **"The protocol version is hard-coded."** It
-  is negotiated in `initialize`. The server
-  advertises support for four versions
-  (`2024-11-05` / `2025-03-26` / `2025-06-18` /
-  `2025-11-25`) and falls back to `2025-06-18`
-  if the client asks for an unknown version.
-- **"The cloud bootstrap is a one-time thing."
-  It is per-call. Each tool call (except
-  `fund_cloud_status`) re-runs the bootstrap
-  decision; passing `db` skips it, omitting it
-  re-checks the cache.
+- **"Server 是 async 的。"** 不是。`for line in sys.stdin` 循环是阻塞 readline；长 tool 调用阻塞循环。假设 async 的 client 可以并行 pipe 多次调用，会看到它们被串行化。
+- **"它支持 HTTP。"** 不支持。仅 stdio。未来的 Streamable HTTP transport 跟踪在 v0.3.0；不要今天就承诺。
+- **"它支持 resources 和 prompts。"** 不支持。`capabilities` 是 `{"tools": {}}`；问 `resources/list` 的 client 拿到 `METHOD_NOT_FOUND`。
+- **"Tool 结果是 JSON。"** 是三件套：`content`（text JSON dump）+ `structuredContent`（类型化 payload）+ `isError`（成功标志）。混了这三个是常见的 client bug。
+- **"`isError: true` 表示调用在协议层失败。"** 不，表示调用在协议层成功，tool 在应用层抛。JSON-RPC 错误才是协议失败的样子。
+- **"Server 有 `fund_doctor` tool。"** 没有。v0.3.0 backlog 有；在那之前，想要健康检查的 agent 必须 shell 出去调 `fund-cli doctor`。
+- **"Server 流式返回结果。"** 不。每响应一个 JSON 对象，没有 chunked encoding，没有 `notifications/progress`。想走大表的 agent 应该分块 1000 调 `fund_export`。
+- **"协议版本是硬编码的。"** 在 `initialize` 里协商。Server 声明支持四个版本（`2024-11-05` / `2025-03-26` / `2025-06-18` / `2025-11-25`），client 问未知版本时 fallback 到 `2025-06-18`。
+- **"Cloud bootstrap 是一次性的。"** 是 per-call 的。每个 tool 调用（`fund_cloud_status` 除外）重跑 bootstrap 决策；传 `db` 跳过，省略重新检查 cache。
 
 ---
 
-## How to add a new tool (the contributor recipe)
+## 怎么加新 tool（贡献者配方）
 
-When a new capability lands in `fund_data.py` and the team
-wants to expose it as an MCP tool:
+当新 capability 在 `fund_data.py` 落地并且团队想把它暴露为 MCP tool：
 
-1. **Add a Python helper** to `fund_data.py` if it does not
-   exist. The helper must accept `db_path` and `provider` as
-   keyword arguments (or via the existing fetch convention).
-2. **Add a tool dict** to `TOOLS` in `fund_mcp.py`:
+1. **加 Python helper** 到 `fund_data.py`（如果还不存在）。Helper 必须接受 `db_path` 和 `provider` 作为 keyword 参数（或者通过现有的 fetch 约定）。
+2. **加 tool 字典** 到 `fund_mcp.py` 的 `TOOLS`：
    ```python
    _tool(
        "fund_new_thing",
-       "Description that explains the agent use case, not the implementation.",
+       "描述解释 agent 用例的，不是实现的。",
        {
            **COMMON_ARGS,
-           "code": _string_schema("6-digit fund code."),
-           # ... other args
+           "code": _string_schema("6 位 fund code。"),
+           # ... 其他参数
        },
        required=["code"],
    ),
    ```
-3. **Add a `_call_fund_new_thing` handler** in
-   `fund_mcp.py` that calls the Python helper. The
-   handler signature is `(arguments: dict) -> Any`.
-4. **Register the handler** in `TOOL_HANDLERS`:
+3. **加 `_call_fund_new_thing` handler** 在 `fund_mcp.py`，调 Python helper。Handler 签名是 `(arguments: dict) -> Any`。
+4. **在 `TOOL_HANDLERS` 注册 handler**：
    ```python
    "fund_new_thing": _call_fund_new_thing,
    ```
-5. **Update `SKILL.md` and the `install_skill.py` skill
-   manifest** if the tool needs a new frontmatter field.
-6. **Add a unit test** in `fund-data/scripts/tests/` that
-   exercises the handler with a fake fund_data module.
-7. **Bump `SERVER_VERSION`** in `fund_mcp.py:27` if the
-   tool is a breaking change for clients.
+5. **更新 `SKILL.md` 和 `install_skill.py` skill manifest** 如果 tool 需要新 frontmatter 字段。
+6. **加单元测试** 在 `fund-data/scripts/tests/`，用一个 fake fund_data 模块走 handler。
+7. **Bump `SERVER_VERSION`** 在 `fund_mcp.py:27` 如果 tool 对 client 是破坏性变更。
 
-If a tool does not need the cloud bootstrap (e.g. a
-pure-cache inspection), add it to the exception list
-in `handle_message` (`tool_name != "fund_cloud_status"`).
+如果 tool 不需要 cloud bootstrap（比如纯 cache 内省），加到 `handle_message` 里的 exception 列表（`tool_name != "fund_cloud_status"`）。
 
 ---
 
-## How to keep this playbook accurate
+## 怎么保持这个剧本准确
 
-The playbook is the team's *settled* explanation, not the
-live code. When the code changes, update the playbook in
-the same PR. The check is:
+剧本是团队 *settled* 的解释，不是 live 代码。代码变了，在同一个 PR 里更新剧本。检查项：
 
-- A new tool is added to `TOOLS` → update Q3 catalogue
-  and the contributor recipe.
-- A new MCP method is implemented → update Q2 (error
-  shapes) and Q7 (capabilities).
-- A new error code is introduced → update Q2 and the
-  protocol table.
-- The bootstrap behaviour on a specific tool changes →
-  update Q3.
-- Protocol version set changes → update Q5.
-- A new client integrates → update the gateway config
-  examples in the related playbook.
+- 新 tool 加到 `TOOLS` → 更新 Q3 目录和贡献者配方。
+- 新 MCP 方法实现 → 更新 Q2（错误形态）和 Q7（能力）。
+- 新错误码引入 → 更新 Q2 和协议表。
+- 特定 tool 的 bootstrap 行为变了 → 更新 Q3。
+- 协议版本集变了 → 更新 Q5。
+- 新 client 集成 → 更新相关 playbook 里的 gateway config 例子。
 
-If a PR changes any of the above and does not update the
-playbook, request changes with a pointer to this section.
+如果 PR 改了上面任何一项但没更新剧本，request changes 时指这一节。
 
 ---
 
-## Related documents
+## 相关文档
 
-- [`fund-mcp-server-pipeline.md`](./fund-mcp-server-pipeline.md) —
-  diagrams + code anchors + tool catalogue.
-- [`fund-lookup-pipeline.md`](./fund-lookup-pipeline.md) —
-  what happens *inside* a tool call (cloud bootstrap +
-  provider chain).
-- [`fund-search-playbook.md`](./fund-search-playbook.md) —
-  the single-search answer script.
-- [`fund-batch-sync-playbook.md`](./fund-batch-sync-playbook.md) —
-  the batch-sync answer script (for `fund_sync` /
-  `fund_batch_sync` tools).
-- [`../../fund-data/SKILL.md`](../../fund-data/SKILL.md) —
-  the agent-facing skill manifest.
-- [`../../fund-data/SKILLS.md`](../../fund-data/SKILLS.md) —
-  per-platform install layout for Codex / Claude /
-  OpenClaw; the MCP server config block in
-  §"MCP server" is the canonical gateway snippet.
-- [`../../README.md` §Known gaps](../../README.md#known-gaps-tracked-for-030) —
-  the v0.3.0 backlog items (HTTP/SSE transport,
-  progress notifications, resources, prompts, doctor
-  tool).
+- [`fund-mcp-server-pipeline.md`](./fund-mcp-server-pipeline.md) —— 图表 + 代码锚点 + tool 目录。
+- [`fund-lookup-pipeline.md`](./fund-lookup-pipeline.md) —— tool 调用 *内部* 发生什么（cloud bootstrap + provider chain）。
+- [`fund-search-playbook.md`](./fund-search-playbook.md) —— 单次 search 的回答脚本。
+- [`fund-batch-sync-playbook.md`](./fund-batch-sync-playbook.md) —— batch sync 的回答脚本（给 `fund_sync` / `fund_batch_sync` tool 用）。
+- [`../../fund-data/SKILL.md`](../../fund-data/SKILL.md) —— agent-facing skill manifest。
+- [`../../fund-data/SKILLS.md`](../../fund-data/SKILLS.md) —— Codex / Claude / OpenClaw 的 per-platform install 布局；§"MCP server" 的 MCP server config block 是规范的 gateway 片段。
+- [`../../README.md` §Known gaps](../../README.md#known-gaps-tracked-for-030) —— v0.3.0 backlog（HTTP/SSE transport、progress 通知、resources、prompts、doctor tool）。

@@ -1,658 +1,218 @@
-# Fund Batch Sync Playbook
+# Fund Batch Sync 剧本（Playbook）
 
-> **Last updated:** 2026-06-02
-> **Audience:** Anyone — human or AI — who gets asked "how does
-> `fund-data` sync a watchlist / 100 funds / 27k funds?" or "why
-> is the backfill so slow / why did it fail / why did it write to
-> the wrong DB?". This is the **answer script** for the
-> long-running pipeline. Pair with
-> [`fund-batch-sync-pipeline.md`](./fund-batch-sync-pipeline.md)
-> for diagrams and code anchors.
+> **最后更新:** 2026-06-02
+> **目标读者:** 任何人 —— 人或 AI —— 被问到"fund-data 是怎么同步一组基金的？"、"为什么 backfill 这么慢？"、"为什么失败？"、"为什么数据写到错的 DB 了？"。这是 **长跑管道的回答脚本**。配套 [`fund-batch-sync-pipeline.md`](./fund-batch-sync-pipeline.md)（图表 + 代码锚点）一起看。
 >
-> **Use it when:**
-> - Onboarding a new contributor or agent to the data plane.
-> - Reviewing a PR that touches `fund_data.sync_fund`,
->   `fund_data.batch_sync_funds`, `scripts/backfill.py`, or any
->   provider's per-fund fetch.
-> - Debugging a report of "backfill failed" or "data is in the
->   wrong DB" or "the nightly cron hung at 0% CPU".
-> - Fielding a question about whether to use the backfill
->   runner, direct `batch_sync_funds`, or a one-off `fund_sync`.
-> - Estimating runtime for a new dataset combination.
+> **使用场景:**
+> - onboarding 新 contributor 或 agent 进入数据平面。
+> - 审查涉及 `fund_data.sync_fund`、`fund_data.batch_sync_funds`、`scripts/backfill.py` 或任何 provider 的 per-fund fetch 的 PR。
+> - 排查"backfill 失败"或"数据在错的 DB 里"或"夜间 cron 卡在 0% CPU"这类报告。
+> - 回答"该用 backfill runner、direct `batch_sync_funds`、还是 one-off `fund_sync`"。
+> - 估算新数据集组合的运行时长。
 >
-> **Do NOT use it when:**
-> - The question is about a single search → use
->   [`fund-search-playbook.md`](./fund-search-playbook.md).
-> - The question is about a specific provider's quirks → use
->   [`fund-data/PROVIDERS.md`](../../fund-data/PROVIDERS.md).
-> - The question is "how do I install the skill" → use
->   [`fund-data/SKILLS.md`](../../fund-data/SKILLS.md).
+> **不在使用场景之内:**
+> - 问题是关于单次 search → 用 [`fund-search-playbook.md`](./fund-search-playbook.md)。
+> - 问题是关于某个具体 provider 的怪癖 → 用 [`fund-data/PROVIDERS.md`](../../fund-data/PROVIDERS.md)。
+> - 问题是"怎么装 skill" → 用 [`fund-data/SKILLS.md`](../../fund-data/SKILLS.md)。
 
 ---
 
-## TL;DR (90-second answer)
+## 90 秒答案（TL;DR）
 
-A batch sync in `fund-data` is **the same four layers as a single
-search, plus a long-running runner on top** that owns state, batch
-boundaries, and lock-retry:
+`fund-data` 的 batch sync 是 **跟单次 search 一样的四层，再加一个长跑 runner**，负责 state、batch 边界和 lock retry：
 
-1. **Entry point** — `fund_batch_sync` MCP tool, `fund-backfill`
-   CLI, or direct Python import of `batch_sync_funds` /
-   `backfill`.
-2. **Backfill runner** (optional) — `backfill.py` adds
-   `fund_type` filtering, state persistence
-   (`backfill_state.json`), batch grouping, and "database is
-   locked" retry.
-3. **Cloud bootstrap** — same as search: `ensure_project_bundle`
-   decides whether to install the OSS query bundle.
-4. **DB path resolution** — same as search: `default_db_path()`
-   collapses env vars and cache into one concrete file.
-5. **Batch scheduler** — `batch_sync_funds` runs N parallel
-   `sync_fund` calls (or serial when `concurrency=1`).
-6. **Per-fund pipeline** — `sync_fund` walks the capability
-   ladder: snapshot → profile → fund row → NAV → optional
-   datasets (holdings, bonds, industries, fees, distributions,
-   managers), then writes a `sync_runs` audit row.
-7. **Provider chain (per capability)** — same shape as search;
-   each capability picks its own chain.
+1. **入口** —— `fund_batch_sync` MCP tool、`fund-backfill` CLI，或者直接 Python import `batch_sync_funds` / `backfill`。
+2. **Backfill runner**（可选）—— `backfill.py` 加 `fund_type` 过滤、state 持久化（`backfill_state.json`）、batch 分组和 "database is locked" 重试。
+3. **Cloud bootstrap** —— 跟 search 一样：`ensure_project_bundle` 决定要不要装 OSS query bundle。
+4. **DB 路径解析** —— 跟 search 一样：`default_db_path()` 把 env vars 和 cache 折叠成一个具体文件。
+5. **Batch scheduler** —— `batch_sync_funds` 并行跑 N 个 `sync_fund` 调用（`concurrency=1` 时串行）。
+6. **Per-fund pipeline** —— `sync_fund` 走 capability 阶梯：snapshot → profile → fund row → NAV → 可选数据集（holdings、bonds、industries、fees、distributions、managers），然后写 `sync_runs` audit 行。
+7. **Provider 链（每个 capability）** —— 跟 search 一样的形状；每个 capability 选自己的链。
 
-The key **differences from search** are: (a) `sync_fund` has a
-**two-tier failure policy** — snapshot and NAV are hard
-failures, optional datasets are soft; (b) `backfill.py` writes
-a JSON state file that survives process death; (c) the
-`ThreadPoolExecutor` is bounded by `concurrency` and throttled
-by a thread-safe `_RateLimiter`.
+跟 search 的 **关键区别** 是：(a) `sync_fund` 有 **两层失败策略** —— snapshot 和 NAV 是硬失败，可选数据集是软失败；(b) `backfill.py` 写一个 JSON state 文件，跨进程死亡也能存活；(c) `ThreadPoolExecutor` 受 `concurrency` 限制，并由线程安全的 `_RateLimiter` 限流。
 
 ---
 
-## The full answer template (use this skeleton)
+## 完整回答模板（用这个骨架）
 
-When asked "how does `fund-data` do a batch sync?", structure
-the answer in **six paragraphs**, one per layer. Order matters
-— it matches the runtime call order.
+当被问到"fund-data 是怎么做 batch sync 的？"，按这个结构回答，**六段对应六层**。顺序重要 —— 跟运行时调用顺序一致。
 
-### Paragraph 1 — Entry point
+### 第 1 段 —— 入口
 
-> The user can enter through three surfaces: the MCP stdio
-> server (`fund_batch_sync` and `fund_sync` tools), the
-> `fund-batch-sync` / `fund-backfill` CLI subcommands, or
-> direct Python imports of `fund_data.batch_sync_funds` or
-> `fund_data.backfill`. The MCP path triggers the cloud
-> bootstrap; the backfill CLI bypasses it (the operator is
-> expected to have set `FUND_DATA_DB`). `fund-backfill` and
-> `fund_data.backfill` are the same function — the backfill
-> runner is a thin wrapper that adds state, fund_type
-> filtering, and lock retry around `batch_sync_funds`.
+> 用户可以走三个入口：MCP stdio server（`fund_batch_sync` 和 `fund_sync` tool）、`fund-batch-sync` / `fund-backfill` CLI 子命令，或者直接 Python import `fund_data.batch_sync_funds` 或 `fund_data.backfill`。MCP 路径触发 cloud bootstrap；backfill CLI 绕过它（operator 应该已经设了 `FUND_DATA_DB`）。`fund-backfill` 和 `fund_data.backfill` 是同一个函数 —— backfill runner 是一个薄包装，在 `batch_sync_funds` 周围加 state、fund_type 过滤和 lock retry。
 
-### Paragraph 2 — Backfill runner (only on the `backfill.py` path)
+### 第 2 段 —— Backfill runner（仅 `backfill.py` 路径）
 
-> When the entry point is `backfill.py`, the runner first
-> reads `backfill_state.json` to know which fund codes are
-> already done, then loads the full fund list from the local
-> SQLite, filters by `--include-type` / `--exclude-type`, and
-> groups the remaining codes by their include-flag signature
-> (currency funds skip optional datasets, mixed funds do
-> not). Each group is sliced into `batch_size` chunks, and
-> each chunk is passed to `batch_sync_funds` inside a
-> `LOCK_RETRY_ATTEMPTS=3` retry wrapper. The state file is
-> updated after every successful batch, so a crash at batch
-> 7 resumes at batch 8. `--reset` discards the state for a
-> from-scratch run.
+> 当入口是 `backfill.py` 时，runner 首先读 `backfill_state.json` 知道哪些 fund code 已经完成，然后从本地 SQLite 加载完整 fund list，按 `--include-type` / `--exclude-type` 过滤，按 include-flag signature 分组剩余 codes（货币型基金跳过可选数据集，混合型不跳）。每组被切成 `batch_size` 的块，每块传给 `batch_sync_funds`，外面包一层 `LOCK_RETRY_ATTEMPTS=3` 重试。State 文件在每个成功的 batch 之后更新，所以 batch 7 崩溃了，下次从 batch 8 继续。`--reset` 丢掉 state 从头开始跑。
 
-### Paragraph 3 — Cloud bootstrap and DB path resolution
+### 第 3 段 —— Cloud bootstrap 和 DB 路径解析
 
-> `batch_sync_funds` (and the MCP path) then runs the same
-> `ensure_project_bundle` → `default_db_path` sequence as
-> search. A successful bootstrap returns an OSS or cache DB;
-> a failed bootstrap falls through to the local fallback
-> `fund-data/data/fund_data.sqlite`. **The bootstrap is
-> silent on failure** — the live providers still get a
-> chance to serve — but a long-running backfill that
-> accidentally writes to the cache DB instead of the on-disk
-> DB will diverge from `doctor.py`'s report. Always set
-> `FUND_DATA_DB` explicitly for backfill runs.
+> `batch_sync_funds`（和 MCP 路径）然后跑跟 search 一样的 `ensure_project_bundle` → `default_db_path` 序列。成功的 bootstrap 返回 OSS 或 cache DB；失败的 bootstrap fallback 到本地 `fund-data/data/fund_data.sqlite`。**Bootstrap 在失败时是静默的** —— live provider 仍然有机会服务 —— 但是一个长跑 backfill 不小心写到 cache DB 而不是本机 DB，会跟 `doctor.py` 的报告有分歧。Backfill 运行时**总是显式设 `FUND_DATA_DB`**。
 
-### Paragraph 4 — Batch scheduler
+### 第 4 段 —— Batch scheduler
 
-> With the DB path resolved, `batch_sync_funds` runs the
-> per-fund pipeline. With `concurrency=1` it is a serial
-> loop; with `concurrency>1` it is a `ThreadPoolExecutor`
-> using `as_completed` for result collection. `stop_on_error`
-> short-circuits the rest of the batch on the first hard
-> failure (rarely used; backfill prefers continue + retry).
-> `min_interval_seconds` defaults to `0.25` for concurrent
-> and `1.0` for serial — these are the rate-limit budgets
-> that did not produce 5xx errors in the team's measurement
-> runs.
+> DB 路径解析之后，`batch_sync_funds` 跑 per-fund pipeline。`concurrency=1` 是串行循环；`concurrency>1` 是 `ThreadPoolExecutor` 用 `as_completed` 收集结果。`stop_on_error` 在第一个硬失败时短路剩下的 batch（很少用；backfill 偏好继续 + 重试）。`min_interval_seconds` 默认 concurrent 时 `0.25`、serial 时 `1.0` —— 这些是团队测量中不产生 5xx 错误的限流预算。
 
-### Paragraph 5 — Per-fund pipeline
+### 第 5 段 —— Per-fund pipeline
 
-> `sync_fund` walks the capability ladder. The two **hard
-> failure** steps are `fetch_snapshot` and `fetch_nav_history`
-> — if either raises, the fund moves to `failed_codes` and
-> the rest of its datasets are not requested. The seven
-> **soft failure** steps are `fetch_profile`, `fetch_*holdings`,
-> `fetch_industry_allocations`, `fetch_fee_structures`,
-> `fetch_dividends`, `fetch_splits`, and `fetch_fund_managers`
-> — a hard error on any of these becomes a `dataset_errors`
-> entry and the fund still gets `status: "ok"`. Snapshot
-> pages that come back empty (back-end share classes like
-> `000002`) are soft-skipped, not failed. The fund row is
-> upserted after the profile fetch (so `fund_name` /
-> `fund_type` / `company` / `manager` come from the profile
-> payload, not the snapshot).
+> `sync_fund` 走 capability 阶梯。两个 **硬失败** 步骤是 `fetch_snapshot` 和 `fetch_nav_history` —— 任一抛错，fund 移到 `failed_codes`，剩下的数据集不再请求。七个 **软失败** 步骤是 `fetch_profile`、`fetch_*holdings`、`fetch_industry_allocations`、`fetch_fee_structures`、`fetch_dividends`、`fetch_splits` 和 `fetch_fund_managers` —— 任一硬错误变成 `dataset_errors` 条目，fund 仍然得到 `status: "ok"`。返回空 snapshot（后端 share class，比如 `000002`）是软跳过，不是失败。Fund row 在 profile fetch 之后 upsert（所以 `fund_name` / `fund_type` / `company` / `manager` 来自 profile payload，不是 snapshot）。
 
-### Paragraph 6 — Persistence and state
+### 第 6 段 —— 持久化和 state
 
-> Each `fetch_*` call upserts into its target table
-> (PK on `fund_code` or `(fund_code, report_period, ...)`)
-> and appends the raw provider payload to `raw_responses`.
-> `sync_fund` writes one row to `sync_runs` with the per-fund
-> outcome. A hard failure additionally writes a row to
-> `sync_failures` — this is the live queue for
-> `retry_failures.py`. The backfill runner additionally
-> appends the fund code to `backfill_state.failed_codes` —
-> this is the snapshot used for resume. **The two failure
-> tracks drift** if both `backfill.py` and `retry_failures.py`
-> run interleaved; an agent must read both to get the
-> complete picture.
+> 每个 `fetch_*` 调用 upsert 到目标表（按 `fund_code` 或 `(fund_code, report_period, ...)` 主键），把原始 provider payload 追加到 `raw_responses`。`sync_fund` 写一行到 `sync_runs`，带 per-fund 结果。硬失败额外写一行到 `sync_failures` —— 这是 `retry_failures.py` 的活队列。Backfill runner 另外把 fund code 追加到 `backfill_state.failed_codes` —— 这是 resume 用的快照。**两个失败追踪会有分歧**，如果 `backfill.py` 和 `retry_failures.py` 交错跑；agent 必须读两个才能看到完整画面。
 
 ---
 
-## The 14 most-asked questions (with full answers)
+## 14 个最常被问到的问题（含详细答案 + 为什么这么设计）
 
-These are the questions that come up the most in onboarding,
-support, and PR review. **Answer them in the order they appear
-here, with the same level of detail** — these are the
-explanations the team has settled on after multiple rounds of
-"but why?".
+下面这些问题是在 onboarding、support、PR review 中最常出现的。**按这里出现的顺序回答，用同样的详细程度** —— 这些是团队经过多轮"但为什么？"之后沉淀下来的解释。
 
-### Q1. Why does `backfill` write a `backfill_state.json` while `batch_sync_funds` does not?
+### Q1. 为什么 backfill 写 `backfill_state.json`，而 `batch_sync_funds` 不写？
 
-- **`backfill.py` is for "finish all 27k funds" runs.** A run
-  like that takes 6-21 hours. Without a state file, a
-  process crash at fund 26000 means redoing 0-25999 on
-  restart. With the state file, a restart reads
-  `completed_codes` and skips them.
-- **`batch_sync_funds` is for "sync these N specific funds"
-  one-shot calls.** It is sized for the watchlist /
-  follow-up / on-demand pull case where N is small enough
-  that redoing on failure is cheaper than maintaining
-  state. A 100-fund pull that crashes at fund 80 takes
-  ~2 minutes to redo; a state file is more complexity than
-  it is worth.
-- **The split is intentional, not a TODO.** If you want
-  state-managed behaviour for a 100-fund pull, wrap it in
-  your own loop and persist your own state. The
-  `backfill_state.json` shape is the reference.
+- **`backfill.py` 是为了"完成所有 27k 基金"这种跑。** 这种跑要 6-21 小时。没有 state 文件，进程在 fund 26000 崩溃意味着重启时重做 0-25999。有了 state 文件，重启读 `completed_codes` 然后跳过它们。
+- **`batch_sync_funds` 是为了"同步这 N 个特定基金"的一次性调用。** 它给 watchlist / follow-up / on-demand pull 这种场景用，N 小到失败重做比维护 state 便宜。100 个基金的 pull 在 fund 80 崩溃了，重做要 ~2 分钟；state 文件复杂度大于价值。
+- **这种分割是有意的，不是 TODO。** 想给 100-fund pull 加上 state-managed 行为，自己外面包循环并持久化自己的 state。`backfill_state.json` 的形状就是参考。
 
-### Q2. Why are snapshot and NAV hard failures while profile / holdings are soft failures?
+### Q2. 为什么 snapshot 和 NAV 是硬失败，profile / holdings 是软失败？
 
-- **Snapshot and NAV are the data anchors.** Every other
-  table joins back to one of them. A `funds` row without a
-  snapshot is just a name; a `stock_holdings` row without
-  the fund it belongs to is junk. If we soft-failed
-  snapshot, we would still write the fund row and the
-  holdings row, and downstream queries would have to
-  filter out "funds with no snapshot" everywhere. Hard
-  failure is the explicit "we do not have the data anchor
-  for this fund" signal.
-- **Profile / holdings / fees / distributions are
-  enrichment.** A fund with `status: "ok"` + empty
-  `dataset_errors` profile but populated holdings is
-  usable: you can still look up the fund, get NAV
-  history, get holdings, and skip the profile. A fund
-  with populated profile but empty holdings is also
-  usable: the user gets the description and the fees.
-  The asymmetry matches the user-facing question shape.
-- **The `dataset_errors` channel is the audit trail.** A
-  partial success is reported as `status: "ok"` +
-  `len(dataset_errors) > 0`. An agent that wants to know
-  which funds have which gaps can inspect the channel
-  and act (re-run with a different provider, or accept
-  the gap).
+- **Snapshot 和 NAV 是数据锚点。** 每个其他表都 join 回其中一个。没有 snapshot 的 `funds` 行只是个名字；没有它所属基金的 `stock_holdings` 行是垃圾。如果我们软失败 snapshot，我们仍然会写 fund 行和 holdings 行，下游查询要在每个地方 filter 掉"没 snapshot 的基金"。硬失败是显式的"我们没有这个基金的数据锚点"信号。
+- **Profile / holdings / fees / distributions 是 enrichment。** 有 `status: "ok"` + 空 `dataset_errors` profile 但有 holdings 的基金是可用的：你仍然能查到基金、拿到 NAV 历史、拿到 holdings，跳过 profile。有 profile 但空 holdings 也可用：用户拿到描述和费率。这种不对称匹配用户面对的问题形状。
+- **`dataset_errors` 通道是 audit trail。** 部分成功被报告为 `status: "ok"` + `len(dataset_errors) > 0`。想看哪些基金有哪些缺口的 agent 可以看这个通道然后行动（用不同 provider 重跑，或接受缺口）。
 
-### Q3. Why does `backfill` skip optional datasets for 货币型 funds by default?
+### Q3. 为什么 backfill 默认对 `货币型` 基金跳过可选数据集？
 
-- **货币 funds have no stock / bond / industry holdings by
-  regulatory design.** They are money-market funds. AkShare
-  and Eastmoney both return `[]` for these endpoints, plus
-  a `dataset_errors` row that costs one rate-limit slot.
-- **975 货币 funds × 5 empty datasets × 2-3 s per call =
-  2.5-4 hours of wasted rate-limit budget.** On a 21-hour
-  backfill, that is 12-20 % of the wall time for calls
-  that return nothing.
-- **`--no-skip-currency` exists for the case where you
-  trust a different provider to fill the gap** (e.g. a
-  paid Investoday L2 endpoint that returns 货币 dividend
-  history). The default is "be cheap"; the override is
-  "be exhaustive".
+- **货币型基金按监管设计就没有 stock / bond / industry holdings。** 它们是货币市场基金。AkShare 和 Eastmoney 都为这些 endpoint 返回 `[]`，外加一个 `dataset_errors` 行，那个行要花一个限流 slot。
+- **975 货币型基金 × 5 个空数据集 × 每次调用 2-3 秒 = 2.5-4 小时浪费的限流预算。** 在 21 小时 backfill 上，那占总时间的 12-20%，调用全空。
+- **`--no-skip-currency` 是你信任不同 provider 填补空白的场景。**（比如付费 Investoday L2 endpoint 返回 货币型 dividend 历史）。默认是"便宜"；override 是"穷尽"。
 
-### Q4. Why is `--provider eastmoney --concurrency 8` the fastest path, and why doesn't `--provider akshare --concurrency 8` work?
+### Q4. 为什么 `--provider eastmoney --concurrency 8` 是最快路径？为什么 `--provider akshare --concurrency 8` 不行？
 
-- **`fetch_nav_history` over Eastmoney is 0.36 s/fund.**
-  `fetch_nav_history` over AkShare is > 6 s/fund. The
-  16× difference is **the upstream throttling behaviour,
-  not the per-call cost** — the team's measurement run hit
-  the AkShare throttle at 16-way concurrency and the
-  server started returning 429s and 5xx. Eastmoney's
-  upstream is a different load-balancer with a more
-  permissive throttle.
-- **The right concurrency is set by the upstream, not by
-  the team's hardware.** Beyond ~8 in-flight AkShare
-  calls, the throughput *decreases* because the client
-  spends more time waiting on 5xx retries than it saves
-  on parallelism.
-- **The recommended split is a two-pass backfill:**
-  `backfill --provider eastmoney` for snapshot + NAV
-  (~90 min), then `backfill --provider tushare` (with
-  token) for the AkShare-only capabilities (~3-4 hours).
-  Pass 1 is fast because Eastmoney is the right tool;
-  pass 2 is fast because Tushare is the right tool.
+- **Eastmoney 上的 `fetch_nav_history` 是 0.36 s/fund。** AkShare 上是 > 6 s/fund。16× 差异是 **上游节流行为，不是每次调用成本** —— 团队的测量在 16-way 突发时撞到了 AkShare 节流，server 开始返回 429 和 5xx。Eastmoney 的上游是不同的 load-balancer，节流更宽松。
+- **正确的并发数由上游决定，不由团队硬件决定。** 超过 ~8 in-flight AkShare 调用，吞吐 *下降*，因为 client 比起省下并行，更多时间在等 5xx 重试。
+- **推荐的分割是两轮 backfill：** `backfill --provider eastmoney` 跑 snapshot + NAV（~90 分钟），然后 `backfill --provider tushare`（带 token）跑 AkShare-only capability（~3-4 小时）。第一轮快是因为 Eastmoney 是正确的工具；第二轮快是因为 Tushare 是正确的工具。
 
-### Q5. Why does lock retry give up after 3 attempts?
+### Q5. 为什么 lock retry 3 次后就放弃？
 
-- **The lock retries are for "another writer is finishing
-  its WAL commit, wait a beat".** A 2-3 second wait is
-  usually enough. A 4-8 second wait covers the tail.
-  Beyond that, the lock holder is stuck on a real
-  problem (deadlock, network partition, a hung
-  subprocess), and waiting longer makes the situation
-  worse, not better.
-- **Aborting is the right policy because the backfill
-  state file is already updated.** The next invocation
-  will read `backfill_state.json`, see the incomplete
-  batch, and re-process those codes. Aborting fast
-  exposes the failure quickly and the operator can
-  diagnose.
-- **A 9-second wait is cheaper than re-running a
-  6-hour backfill** — that is the *floor*. Three
-  attempts at 2/4/8 s = up to 14 s. If we are not
-  done in 14 s, the lock is held by something that
-  will not release in a sane amount of time.
+- **Lock retry 是为了"另一个 writer 正在收尾它的 WAL commit，等一下"。** 2-3 秒通常够。4-8 秒覆盖尾巴。超过这个，锁持有者卡在真正的问题上（死锁、网络分区、挂起的子进程），等更久让情况更糟，不是更好。
+- **放弃是对的策略，因为 backfill state 文件已经更新了。** 下次调用读 `backfill_state.json`，看到不完整的 batch，重新处理这些 code。快速放弃暴露失败，operator 可以诊断。
+- **9 秒的等待比重跑 6 小时 backfill 便宜** —— 这是 *底线*。3 次尝试 2/4/8 秒 = 最多 14 秒。如果 14 秒还没完，锁被某个不会在合理时间内释放的东西持有着。
 
-### Q6. Why is `batch-size 100` safer than `batch-size 500`?
+### Q6. 为什么 `batch-size 100` 比 `batch-size 500` 安全？
 
-- **The state file updates after every batch.** A 200-fund
-  batch takes 5-8 minutes; if it fails at fund 199, the
-  state file does not see any of the 199 successes. A
-  100-fund batch takes 2-4 minutes; the worst case is
-  losing 100 funds' worth of work.
-- **The failure domain is the whole batch.** A transient
-  HTTP blip, a SQLite lock, an OOM kill — any of these
-  takes the whole batch with it. Smaller batches mean
-  smaller failure domains.
-- **The team measured ~96 % success rate at 100-fund
-  batches and ~88 % at 500-fund batches** (the gap is
-  not just lost time, it is lost rows that need a
-  re-run). The default 100 is a calibrated number, not
-  an arbitrary one.
+- **State 文件在每个 batch 之后更新。** 一个 200-fund batch 跑 5-8 分钟；如果它在 fund 199 失败，state 文件看不到 199 个成功的任何一个。100-fund batch 跑 2-4 分钟；最坏情况丢掉 100 个基金的工作。
+- **失败域是整个 batch。** 瞬时 HTTP 闪断、SQLite 锁、OOM kill —— 任一个都带走整个 batch。更小的 batch意味着更小的失败域。
+- **团队测得 100-fund batch 成功率 ~96%，500-fund batch ~88%**（差距不只是丢掉的时间，是需要重跑的丢掉行）。默认 100 是校准过的数字，不是随便选的。
 
-### Q7. Why does `default_db_path()` prefer the OSS cache, and why does that conflict with `doctor.py`?
+### Q7. 为什么 `default_db_path()` 优先 OSS cache，为什么跟 `doctor.py` 冲突？
 
-- **`default_db_path()` is the agent-friendly path.** An
-  OpenClaw daemon that pulled the OSS bundle wants to
-  read from that bundle. Putting the cache ahead of the
-  on-disk DB in the precedence list means the daemon
-  does not have to think about which DB it is hitting.
-- **`doctor.py` is the operator-friendly path.** The
-  operator wants to know "is the production DB healthy?",
-  which is the on-disk DB, not whatever cache happens
-  to be pulled.
-- **The two are intentionally separate** — `doctor.py`
-  does not walk the cache, and the cache is not
-  considered production. A long-running backfill that
-  uses `default_db_path()` will write to whichever DB
-  wins the precedence; `doctor.py` will report on
-  whichever DB it knows about. If they diverge, the
-  backfill is writing to the cache and `doctor.py` is
-  reporting on the on-disk DB.
-- **The fix is to set `FUND_DATA_DB` explicitly for any
-  backfill that wants to land in production.** The CI
-  workflow does this; local CLI runs without that var
-  land in the cache. The trade-off is documented in
-  `fund-data/AGENTS.md` §Long-running pitfalls.
+- **`default_db_path()` 是 agent-friendly 路径。** 一个拉过 OSS bundle 的 OpenClaw daemon 想从那个 bundle 读。把 cache 放到本机 DB 之前的优先级列表意味着 daemon 不用想它在打哪个 DB。
+- **`doctor.py` 是 operator-friendly 路径。** Operator 想知道"生产 DB 健康吗？"，那是本机 DB，不是碰巧拉过来的 cache。
+- **两个有意分开** —— `doctor.py` 不走 cache，cache 不被认为是生产。一个用 `default_db_path()` 的长跑 backfill 会写到优先级里胜出的那个 DB；`doctor.py` 报告它知道的那个。如果它们分歧，backfill 在写 cache，`doctor.py` 在报告本机 DB。
+- **修法是给任何想落到生产的 backfill 显式设 `FUND_DATA_DB`。** CI workflow 这么干；没那个 var 的本地 CLI run 落到 cache。权衡在 `fund-data/AGENTS.md` §Long-running pitfalls 有文档。
 
-### Q8. Why are `--include-type` / `--exclude-type` substring matches, not exact matches?
+### Q8. 为什么 `--include-type` / `--exclude-type` 是子串匹配，不是精确匹配？
 
-- **Fund type strings are hierarchical.** A real row
-  might be `指数型-股票` or `指数型-固收`. The team
-  wanted `--exclude-type 货币` to match both
-  `货币型` and `指数型-货币` without listing them
-  separately. Substring match is the only way to do
-  that with a single flag.
-- **The cost is false positives.** `--include-type 股票`
-  matches `股票型`, `指数型-股票`, and `股票指数`. The
-  team judged that the convenience of one flag per
-  category outweighed the risk of catching more than
-  intended — the false positives are easy to spot in
-  the log.
-- **The alternative is a list-of-patterns API.** The
-  team chose not to ship it because the substring
-  match is the 80/20 design.
+- **Fund type 字符串是分层的。** 一行可能是 `指数型-股票` 或 `指数型-固收`。团队想让 `--exclude-type 货币` 匹配 `货币型` 和 `指数型-货币`，不用分别列。子串匹配是用单 flag 做到这点的唯一方式。
+- **代价是 false positive。** `--include-type 股票` 匹配 `股票型`、`指数型-股票` 和 `股票指数`。团队判断一个 flag 一个类别的便利性超过捕获过多的风险 —— false positive 容易在日志里发现。
+- **备选是 list-of-patterns API。** 团队没上它，因为子串匹配是 80/20 设计。
 
-### Q9. Why does `refresh_fund_type` go around `upsert_funds` with direct SQL?
+### Q9. 为什么 `refresh_fund_type` 绕开 `upsert_funds` 用 direct SQL？
 
-- **`upsert_funds` is whole-row replacement.** When
-  AkShare's `fund_name_em()` returns a row with an empty
-  `fund_type` column, `upsert_funds` writes that empty
-  string over the value that a previous source (e.g.
-  the Eastmoney `fundcode_search` index) had populated.
-  The empty value sticks, the `fund_type` filter
-  breaks, the operator gets paged.
-- **The same index that backs `search` carries a
-  better `fund_type` for every fund.** Pulling that
-  index and writing the `fund_type` column via
-  `UPDATE funds SET fund_type = ? WHERE fund_code = ?`
-  is the surgical fix.
-- **The 18 funds with empty `fund_type` in the
-  Eastmoney index get a regex fallback** that infers
-  the type from the Chinese `fund_name` (e.g. `FOF`,
-  `QDII`, `ETF`). The fallback is a separate pass
-  with its own `sync_runs` audit row.
+- **`upsert_funds` 是整行替换。** 当 AkShare 的 `fund_name_em()` 返回带空 `fund_type` 列的行，`upsert_funds` 把空字符串写到 `fund_type`，覆盖之前数据源（比如 Eastmoney `fundcode_search` 索引）填的值。空值卡在那里，`fund_type` filter 挂了，operator 收到 page。
+- **支撑 search 的同一个索引对每个基金都带更好的 `fund_type`。** 拉那个索引，用 `UPDATE funds SET fund_type = ? WHERE fund_code = ?` 写 `fund_type` 列，是外科手术式的修法。
+- **Eastmoney 自己也给空 `fund_type` 的 18 个基金**（2024-2025 新基金）做 regex fallback，从中文 `fund_name` 推断类型。Fallback 是单独的 pass，带自己的 `sync_runs` audit 行。
 
-### Q10. Why are there two failure tracks (`backfill_state.failed_codes` and `sync_failures`)?
+### Q10. 为什么有两套失败追踪（`backfill_state.failed_codes` 和 `sync_failures`）？
 
-- **The state file is a snapshot; the table is live.**
-  `backfill_state.failed_codes` is written by
-  `backfill.py` at the end of each batch. It is the
-  resume marker. If the process crashes between
-  batches, the state file is consistent with what
-  actually completed.
-- **`sync_failures` is written by `record_sync_failure`
-  inside `batch_sync_funds`.** It is the live queue
-  for `retry_failures.py`. Every hard failure lands
-  here, even those that `backfill.py` then copies to
-  its state file.
-- **The two drift when both `backfill.py` and
-  `retry_failures.py` run interleaved.** A retry that
-  succeeds in `retry_failures.py` writes nothing to
-  the state file; a backfill that resumes will see
-  the code in `failed_codes` and re-fail it. The
-  drift is small (the next `backfill` invocation
-  re-records the failure), but it is real.
-- **The team tracks this as a known ops gotcha, not a
-  bug.** A future fix would have `backfill.py` read
-  `sync_failures` directly instead of its own state
-  field, eliminating the duplication. Until that
-  lands, the operator must know both exist.
+- **State 文件是快照；表是活的。** `backfill_state.failed_codes` 是 `backfill.py` 在每个 batch 结束时写的。它是 resume marker。如果进程在 batch 之间崩溃，state 文件跟实际完成的一致。
+- **`sync_failures` 是 `record_sync_failure` 在 `batch_sync_funds` 里写的。** 它是 `retry_failures.py` 的活队列。每个硬失败都落到这里，即使 `backfill.py` 之后又把它拷到 state 文件。
+- **当 `backfill.py` 和 `retry_failures.py` 交错跑时，两者会分歧。** `retry_failures.py` 成功的 retry 不写 state 文件；resume 时的 backfill 看到 code 在 `failed_codes` 里会重新失败。分歧小（下一次 `backfill` 调用重新记失败），但是真的。
+- **团队跟踪这个作为已知的 ops 陷阱，不是 bug。** 未来的修法是让 `backfill.py` 直接读 `sync_failures` 而不是它自己的 state 字段，去掉重复。在这之前，operator 必须知道两个都存在。
 
-### Q11. Why does the backfill's `_resolve_include_flags` group funds by their flag set?
+### Q11. 为什么 backfill 的 `_resolve_include_flags` 按 flag 集合分组基金？
 
-- **Funds of the same type share a flag set.** All
-  货币型 funds should skip optional datasets; all
-  混合型 funds should request all of them. Grouping
-  by flag set means the same flag dict is passed to
-  every fund in a group, which makes the per-fund
-  work in `batch_sync_funds` identical.
-- **The optimisation is small but free.** The
-  grouping is O(N) over the fund list; the
-  per-fund fetch is unchanged. The win is that the
-  log output is cleaner (one batch report per group
-  rather than per fund).
-- **The grouping is a code-readability win, not a
-  performance win.** A future refactor could move
-  the flag resolution into `sync_fund` itself and
-  the runtime would not change. The current
-  grouping is the convenience layer for the operator
-  who reads the log.
+- **同类型的基金共享一个 flag 集合。** 所有 `货币型` 基金应该跳过可选数据集；所有 `混合型` 基金应该请求所有。按时 flag 集合分组意味着同样的 flag dict 传给 group 里每个基金，让 `batch_sync_funds` 里 per-fund 工作相同。
+- **优化小但免费。** 分组是 O(N) over fund list；per-fund fetch 不变。赢是日志输出更干净（每个 group 一份 batch 报告，而不是每个 fund）。
+- **分组是代码可读性的赢，不是性能的赢。** 未来的重构可以把 flag 解析移到 `sync_fund` 里，运行时不变。当前的分组是读日志的 operator 的便利层。
 
-### Q12. Why are the macOS proxy / IPv6 pitfalls patched in Python, not in env vars or system config?
+### Q12. 为什么 macOS proxy / IPv6 坑要在 Python 层 patch，不用 env vars 或系统配置？
 
-- **macOS has three layers of proxy and they are
-  controlled by different mechanisms.** Layer 1
-  (env vars `http_proxy` / `https_proxy`) is easy
-  to clear. Layer 2 (macOS system proxy via
-  `scutil --proxy`) affects every process. Layer 3
-  (third-party app like Clash Verge listening on
-  7897) injects via launchd env into every process
-  the app spawns.
-- **Env-var-only fixes (`env -u https_proxy`) only
-  clear layer 1.** Layers 2 and 3 are untouched.
-  The fix has to live in the Python runtime.
-- **`urllib.request.getproxies = lambda: {}`
-  monkey-patches the function that all
-  `urllib`-based clients consult.** This is layer
-  1 + layer 2 in one patch (layer 2 flows through
-  the same `getproxies` function). Layer 3 is
-  handled by the same patch because layer 3
-  ultimately injects env vars that flow through
-  `getproxies` too.
-- **The same shape applies to the IPv6 fix.**
-  `socket.getaddrinfo` is the Python-level
-  function that all `socket`-based clients use;
-  patching it to drop IPv6 candidates pre-empts
-  the happy-eyeballs deadlock without touching
-  system config.
-- **Both patches are documented in
-  `fund-data/AGENTS.md` §Long-running pitfalls.**
-  They are not workarounds for a `fund-data` bug;
-  they are workarounds for macOS-specific
-  behaviours that no Python library can fix from
-  outside.
+- **macOS 有三层 proxy，它们由不同机制控制。** 第一层（env vars `http_proxy` / `https_proxy`）容易清。第二层（macOS system proxy via `scutil --proxy`）影响每个进程。第三层（第三方 app 像 Clash Verge 监听 7897）通过 launchd env 注入 app spawn 的每个进程。
+- **只用 env var 的修法（`env -u https_proxy`）只清第一层。** 第二和第三层没动。修法必须活在 Python runtime。
+- **`urllib.request.getproxies = lambda: {}` monkey-patch 所有 `urllib`-based client 查的那个函数。** 这一招覆盖第一 + 第二层（第二层流过同一个 `getproxies` 函数）。第三层也被同一招处理，因为第三层最终注入 env vars，那些也流过 `getproxies`。
+- **IPv6 修法同理。** `socket.getaddrinfo` 是 Python 层所有 `socket`-based client 用的函数；patch 它在 import 项目之前 drop 掉 IPv6 候选，绕过 happy-eyeballs 死锁，不动系统配置。
+- **两招都在 `fund-data/AGENTS.md` §Long-running pitfalls 有文档。** 它们不是 `fund-data` bug 的 workaround；它们是 macOS 特定行为的 workaround，没有 Python 库能从外面修。
 
-### Q13. Why is the 1-hour OSS cache TTL a problem for nightly backfill?
+### Q13. 为什么 1 小时 OSS cache TTL 是 nightly backfill 的坑？
 
-- **The cache TTL is intentional.** It means a daemon
-  that pulls a bundle does not hammer OSS on every
-  call. A nightly backfill that needs the latest
-  data has to either (a) wait up to 1 hour for the
-  cache to refresh, or (b) re-pull explicitly.
-- **The nightly CI workflow calls
-  `fund_cli cloud pull` first**, which re-checks
-  the manifest URL and pulls if the version
-  bumped. If the version did not bump, the local
-  cache is used and the backfill reads from it.
-- **The right cadence is:** nightly cron
-  → `cloud build-bundle` (publishes the latest
-  query DB) → `cloud upload` (writes the
-  manifest) → consumer `cloud pull` (picks up the
-  new manifest) → consumer `backfill`. Each step
-  has its own failure mode and is logged
-  separately. A missing step is the most common
-  cause of "the backfill ran but used yesterday's
-  data".
+- **Cache TTL 故意。** 它意味着一个拉了 bundle 的 daemon 不会每次调用都重击 OSS。一个需要最新数据的 nightly backfill 要么（a）等最多 1 小时让 cache 刷新，要么（b）显式重拉。
+- **夜间 CI workflow 先调 `fund_cli cloud pull`**，重新检查 manifest URL，版本变了就拉。如果版本没变，用本地 cache，backfill 从那里读。
+- **正确节奏是：**夜间 cron → `cloud build-bundle`（发布最新 query DB）→ `cloud upload`（写 manifest）→ 消费者 `cloud pull`（拿起新 manifest）→ 消费者 `backfill`。每步有自己的失败模式，独立日志。少了任何一步是"backfill 跑了但用了昨天数据"最常见的原因。
 
-### Q14. Why doesn't `batch_sync_funds` have a `--dry-run` flag?
+### Q14. 为什么 `batch_sync_funds` 没有 `--dry-run` 标志？
 
-- **`--max-funds N` is the cheap dry run.** It caps
-  the fund count and runs the full pipeline. A
-  smoke test is `--max-funds 5 --concurrency 1`
-  with `--include-all`, which runs in ~30 seconds
-  and exercises every code path except the long
-  tail.
-- **A true `--dry-run` would have to predict
-  per-fund dataset fan-out** (which fund will
-  return empty for `fees`? which will trip a rate
-  limit?), and that prediction requires running
-  the fetch. The cheapest faithful dry-run is
-  exactly what `--max-funds` does.
-- **The team considered a "report what would be
-  fetched" mode** that walks the `funds` table
-  and prints the include-flag set per code. It was
-  rejected as redundant with `coverage_report` —
-  the agent can read the coverage report and the
-  `funds.fund_type` field and infer the shape.
+- **`--max-funds N` 是便宜的 dry run。** 它限制 fund count，跑完整 pipeline。烟雾测试是 `--max-funds 5 --concurrency 1 --include-all`，~30 秒跑完，每个 code path 除了长尾都走过。
+- **真正的 `--dry-run` 必须预测 per-fund 数据集展开**（哪个基金会为 `fees` 返回空？哪个会撞限流？），那个预测要求实际跑 fetch。最便宜忠实的 dry-run 就是 `--max-funds` 干的事。
+- **团队考虑过"报告要 fetch 什么"模式**，会走 `funds` 表打印每个 code 的 include-flag 集合。被 reject 掉因为跟 `coverage_report` 重复 —— agent 可以读 coverage report 和 `funds.fund_type` 字段推断形状。
 
 ---
 
-## Design philosophy (the "why" of the seven-layer shape)
+## 设计哲学（为什么七层是这个形状）
 
-Read this section once and the rest of the playbook becomes
-obvious.
+读完这一节，剩下的 playbook 就显而易见了。
 
-1. **The pipeline is shaped by its failure modes, not its
-   success modes.** Snapshot and NAV are hard-fail because
-   they are data anchors. Profile and holdings are soft-fail
-   because they are enrichment. The two-tier classification
-   is the loud/quiet boundary, and the boundary is drawn
-   by what the user can do with partial data.
-2. **State is for long runs, not for short ones.** A 100-fund
-   pull does not need a state file; a 27k-fund pull does.
-   The split between `batch_sync_funds` (no state) and
-   `backfill.py` (state) is intentional. A future
-   `batch_sync_funds --state-file` flag is a one-line
-   addition if needed.
-3. **The two-tier failure policy is the contract.** Agents
-   that consume `sync_fund` results know that
-   `status: "ok"` + empty `dataset_errors` is a full
-   success, `status: "ok"` + non-empty `dataset_errors` is
-   a partial success, and `status: "error"` is a hard
-   failure. The dataset_errors list is the audit hook.
-4. **Provider chain ordering is a benchmark, not a belief.**
-   Eastmoney-first for the cheap four, AkShare-first for
-   the deep eight, paid providers prepended if keyed —
-   the team re-measures quarterly. The ordering lives in
-   `build_providers_full` and is the only file to touch
-   when a provider gets faster.
-5. **Two storage tiers exist for a reason.** The full
-   audit-log DB (`fund-data/data/fund_data.sqlite`) keeps
-   `raw_responses`, `sync_runs`, `sync_failures`; the
-   query-only bundle (`fund_data_query.sqlite.gz`) strips
-   them. The `default_db_path()` precedence list prefers
-   the cache when pulled; the on-disk DB is the
-   `doctor.py` baseline. The two are intentionally
-   separate, and a long-running backfill that wants to
-   land in the on-disk DB must set `FUND_DATA_DB`
-   explicitly.
-6. **Idempotency is the default.** Every `upsert_*` is
-   keyed on a primary key; every `fetch_*` is read-only
-   upstream. Re-running the same `sync_fund` on the same
-   code is a no-op. Re-running the same `backfill` is
-   safe; the state file is what makes resume cheap.
-   This is why the team felt comfortable with
-   "retry the same call" being the answer to "what if
-   it failed halfway".
-7. **Configuration through env vars, not code.** Every
-   behaviour-altering knob is an env var:
-   `FUND_DATA_DB`, `FUND_DATA_AUTO_PULL`,
-   `FUND_DATA_MANIFEST_URL`, `FUND_DATA_CACHE_DIR`,
-   `INVESTODAY_API_KEY`, `TUSHARE_TOKEN`,
-   `FUND_DATA_DISABLE_AKSHARE`. A long-running daemon
-   flips these between calls without restarting; a CI
-   runner sets them per-step.
-8. **Errors carry trail, not blame.** `ProviderError`
-   says "all providers failed for sync_fund: eastmoney:
-   ...; akshare: ...". `sync_failures` records the
-   per-fund failure message. The `dataset_errors` list
-   in the `sync_fund` result carries the per-dataset
-   trail. The `sync_runs` table carries the per-call
-   audit row. The trail is what an agent needs to
-   self-diagnose; the convention is "a failure
-   response is a success-shaped message that happens
-   to contain `error` or `isError`, never a bare
-   string".
+1. **管道形状由失败模式决定，不由成功模式决定。** Snapshot 和 NAV 是硬失败，因为它们是数据锚点。Profile 和 holdings 是软失败，因为它们是 enrichment。两层分类是响亮/安静的边界，边界由用户能否用部分数据决定。
+2. **State 是为长跑设的，不是为短跑设的。** 100-fund pull 不需要 state 文件；27k-fund pull 需要。`batch_sync_funds`（没 state）和 `backfill.py`（有 state）之间的分割是有意的。如果需要，`batch_sync_funds --state-file` 标志是单行添加。
+3. **两层失败策略是契约。** 消费 `sync_fund` 结果的 agent 知道 `status: "ok"` + 空 `dataset_errors` 是完全成功，`status: "ok"` + 非空 `dataset_errors` 是部分成功，`status: "error"` 是硬失败。`dataset_errors` 列表是 audit 钩子。
+4. **Provider 链顺序是 benchmark，不是信念。** Eastmoney 优先便宜的四个，AkShare 优先深的八个，付费 provider 设了 key 就前置 —— 团队每个季度重测。顺序在 `build_providers_full` 里，是改 provider 速度时唯一要碰的文件。
+5. **两个存储层是有意为之。** 完整 audit-log DB（`fund-data/data/fund_data.sqlite`）保留 `raw_responses`、`sync_runs`、`sync_failures`；query-only bundle（`fund_data_query.sqlite.gz`）剥掉它们。`default_db_path()` 优先级列表在拉过的时候优先 cache；本机 DB 是 `doctor.py` 基准。两者有意分开，想落到本机 DB 的长跑 backfill 必须显式设 `FUND_DATA_DB`。
+6. **Idempotency 是默认。** 每个 `upsert_*` 按主键；每个 `fetch_*` 在上游是只读的。在同一个 code 上 re-run 同一个 `sync_fund` 是 no-op。Re-run 同一个 `backfill` 是安全的；让 resume 便宜的是 state 文件。这为什么团队对"重试同一个调用"作为"如果它半路失败怎么办"的答案感到舒服。
+7. **通过 env vars 配置，不通过代码配置。** 每个改变行为的旋钮是 env var：`FUND_DATA_DB`、`FUND_DATA_AUTO_PULL`、`FUND_DATA_MANIFEST_URL`、`FUND_DATA_CACHE_DIR`、`INVESTODAY_API_KEY`、`TUSHARE_TOKEN`、`FUND_DATA_DISABLE_AKSHARE`。长跑 daemon 在调用之间翻转这些不重启；CI runner per-step 设它们。
+8. **错误带 trail，不带 blame。** `ProviderError` 说"all providers failed for sync_fund: eastmoney: ...; akshare: ..."。`sync_failures` 记录 per-fund 失败 message。`sync_fund` 结果里的 `dataset_errors` 列表带 per-dataset trail。`sync_runs` 表带 per-call audit 行。Trail 就是 agent 自诊断需要的；约定是"失败响应是 success-shaped message 包含 `error` 或 `isError`，绝不是裸字符串"。
 
 ---
 
-## What NOT to say (anti-patterns)
+## 反面教材（不要这么说）
 
-These are common wrong answers the team has seen in PR reviews
-and support threads. Avoid them.
+这些是 PR review 和 support 线程里见过的常见错误回答。避开它们。
 
-- **"Just call `fund_sync` in a loop."** That is the
-  single-fund entry point. The whole batch system exists
-  to avoid the loop. The loop is the wrong shape because
-  each call spawns the full bootstrap.
-- **"Backfill always takes 21 hours."** It takes 21 hours
-  on the AkShare path. Eastmoney + concurrency 8 is ~90
-  minutes for snapshot + NAV. The runtime is a function
-  of the provider choice, not a constant of the system.
-- **"It writes to the local DB."** Which local DB? The
-  on-disk `fund-data/data/fund_data.sqlite` or the
-  `~/.cache/fund-data/releases/<version>/fund_data_query.sqlite`
-  the bootstrap just pulled? `default_db_path()` decides.
-  Set `FUND_DATA_DB` if you want the on-disk one.
-- **"Retry the 380 snapshot failures."** They are
-  `eastmoney: fund code must contain 6 digits: ''` +
-  `akshare: 'AkshareProvider' object has no attribute
-  'snapshot'`. Both will fail forever. The PR that adds
-  `AkshareProvider.snapshot` is the fix; retrying is
-  noise.
-- **"Backfill is best run at night."** Backfill is
-  whatever the operator schedules. The nightly CI
-  workflow runs at 02:00 UTC because that is when
-  the OSS bundle is published. An on-demand pull is
-  not bound to that schedule.
-- **"Use `akshare` for the full backfill."** AkShare is
-  currently unusable for full coverage. Use Eastmoney for
-  the cheap four, Tushare/Investoday for the deep eight.
-- **"The macOS proxy is a `fund-data` bug."** It is a
-  macOS quirk. Three layers of proxy (env vars,
-  `scutil --proxy`, third-party app) are how macOS
-  works. Patching in Python is the only portable fix
-  that does not affect the user's daily network.
-- **"`backfill_state.failed_codes` is the failure
-  queue."** It is a snapshot. The live queue is
-  `sync_failures`. They drift. Read both.
-- **"Just run `refresh_fund_type` to fix `fund_type`."
-  It fixes 99.93 % of rows.** The 18 funds with empty
-  `fund_type` after that pass are 2024-2025 new funds
-  that the Eastmoney index has not typed yet. A second
-  `refresh_fund_type --only-empty` will not help; the
-  fallback is regex on `fund_name`.
+- **"就在 `fund_sync` 循环里调。"** 那是单 fund 入口。整个 batch 系统存在就是为了避免循环。循环是错的形状因为每次调用 spawn 完整 bootstrap。
+- **"Backfill 永远要 21 小时。"** 在 AkShare 路径上要 21 小时。Eastmoney + concurrency 8 是 ~90 分钟跑 snapshot + NAV。运行时是 provider 选择的函数，不是系统常量。
+- **"它写到本地 DB。"** 哪个本地 DB？本机 `fund-data/data/fund_data.sqlite` 还是 `~/.cache/fund-data/releases/<version>/fund_data_query.sqlite` 那个 bootstrap 刚拉的？`default_db_path()` 决定。设 `FUND_DATA_DB` 如果想要本机那个。
+- **"盲目重试 380 个 snapshot 失败。"** 它们是 `eastmoney: fund code must contain 6 digits: ''` + `akshare: 'AkshareProvider' object has no attribute 'snapshot'`。两个都会永远失败。加 `AkshareProvider.snapshot` 的 PR 是修法；重试是噪声。
+- **"Backfill 最好夜里跑。"** Backfill 是 operator 安排的任何时间。夜间 CI workflow 在 02:00 UTC 跑是因为那是 OSS bundle 发布的时候。On-demand pull 不受这个时间表约束。
+- **"用 `akshare` 跑全 backfill。"** AkShare 当前对全覆盖不可用。便宜的四个用 Eastmoney，深的八个用 Tushare/Investoday。
+- **"macOS proxy 是 `fund-data` bug。"** 是 macOS 怪癖。三层 proxy（env vars、`scutil --proxy`、第三方 app）就是 macOS 的工作方式。Python 层 patch 是唯一不影响用户日常网络的可移植修法。
+- **"`backfill_state.failed_codes` 是失败队列。"** 是快照。活队列是 `sync_failures`。两者会分歧。两个都读。
+- **"就 `refresh_fund_type` 跑一下修 `fund_type`。"** 它修 99.93% 的行。那 18 个空 `fund_type` 的基金是 2024-2025 新基金，Eastmoney 索引还没给它们定型。再跑一次 `refresh_fund_type --only-empty` 没用；fallback 是 regex on `fund_name`。
 
 ---
 
-## How to keep this playbook accurate
+## 怎么保持这个剧本准确
 
-The playbook is the team's *settled* explanation, not the
-live code. When the code changes, update the playbook in
-the same PR. The check is:
+剧本是团队 *settled* 的解释，不是 live 代码。代码变了，在同一个 PR 里更新剧本。检查项：
 
-- Did `backfill.py` defaults change
-  (`DEFAULT_CONCURRENCY`, `DEFAULT_BATCH_SIZE`,
-  `LOCK_RETRY_ATTEMPTS`)? → Update the run profile in
-  §6 and Q4/Q5/Q6.
-- Did `_resolve_include_flags` change? → Update Q3
-  and Q11.
-- Did `sync_fund` capability ladder change (a new fetch
-  added or reordered)? → Update Paragraph 5 and Q2.
-- Did the hard-fail / soft-fail classification change? →
-  Update Paragraph 5 and Q2.
-- Did the provider chain ordering for any capability
-  change? → Update Q4 and the philosophy section.
-- Did a new env var land? → Add it to Paragraph 3 and
-  the env var decision table in
-  `fund-batch-sync-pipeline.md`.
-- Did a new failure track get added? → Update Q10 and
-  the philosophy section.
+- `backfill.py` 默认变了（`DEFAULT_CONCURRENCY`、`DEFAULT_BATCH_SIZE`、`LOCK_RETRY_ATTEMPTS`）→ 更新第 6 段 run profile 和 Q4/Q5/Q6。
+- `_resolve_include_flags` 变了 → 更新 Q3 和 Q11。
+- `sync_fund` capability 阶梯变了（新 fetch 加了或重排了）→ 更新第 5 段和 Q2。
+- 任一 capability 的硬失败/软失败分类变了 → 更新第 5 段和 Q2。
+- 任一 capability 的 provider 链顺序变了 → 更新 Q4 和哲学部分。
+- 新 env var 落地影响 batch sync（比如新 `--proxy-bypass` 旋钮）→ 加到第 3 段和 `fund-batch-sync-pipeline.md` 的 env var 决策表。
+- 新失败追踪加进来 → 更新 Q10 和哲学部分。
 
-If a PR changes any of the above and does not update the
-playbook, request changes with a pointer to this section.
+如果 PR 改了上面任何一项但没更新剧本，request changes 时指这一节。
 
 ---
 
-## Related documents
+## 相关文档
 
-- [`fund-batch-sync-pipeline.md`](./fund-batch-sync-pipeline.md) —
-  diagrams + code anchors + env var table.
-- [`fund-lookup-pipeline.md`](./fund-lookup-pipeline.md) —
-  the single-search reference (start here if you have
-  not read the search playbook).
-- [`fund-search-playbook.md`](./fund-search-playbook.md) —
-  the single-search answer script.
-- [`../../fund-data/SKILL.md`](../../fund-data/SKILL.md) —
-  the agent-facing skill manifest.
-- [`../../fund-data/ARCHITECTURE.md`](../../fund-data/ARCHITECTURE.md) —
-  the contributor-facing architecture reference.
-- [`../../fund-data/AGENTS.md`](../../fund-data/AGENTS.md) —
-  backfill recipes, long-running pitfalls (macOS proxy /
-  IPv6 / `default_db_path` divergence / lock retry),
-  and the per-provider performance numbers that
-  justify the chain ordering.
-- [`../../fund-data/PROVIDERS.md`](../../fund-data/PROVIDERS.md) —
-  how to enable each provider, what each provider
-  actually unlocks, and the recipe for registering a
-  new one.
-- [`../../fund-data/SKILLS.md`](../../fund-data/SKILLS.md) —
-  per-platform install layout for Codex / Claude /
-  OpenClaw.
-- [`../../README.md` §Known gaps](../../README.md#known-gaps-tracked-for-030) —
-  the v0.3.0 backlog items that will land next (no
-  `--json` flag, no HTTP/SSE MCP, no progress
-  notifications, no `fund_doctor` MCP tool).
-- [`../superpowers/specs/2026-06-02-fund-data-completeness-diagnosis.md`](../superpowers/specs/2026-06-02-fund-data-completeness-diagnosis.md) —
-  the per-table / per-fund_type coverage diagnostic
-  that anchors Q2's two-tier failure policy and the
-  380-snapshot-failure audit.
+- [`fund-batch-sync-pipeline.md`](./fund-batch-sync-pipeline.md) —— 图表 + 代码锚点 + env var 表。
+- [`fund-lookup-pipeline.md`](./fund-lookup-pipeline.md) —— 单次 search 的 reference（如果你还没读 search playbook，从这里开始）。
+- [`fund-search-playbook.md`](./fund-search-playbook.md) —— 单次 search 的回答脚本。
+- [`../../fund-data/SKILL.md`](../../fund-data/SKILL.md) —— agent-facing skill manifest。
+- [`../../fund-data/ARCHITECTURE.md`](../../fund-data/ARCHITECTURE.md) —— contributor-facing 架构参考。
+- [`../../fund-data/AGENTS.md`](../../fund-data/AGENTS.md) —— backfill 配方、长跑陷阱（macOS proxy / IPv6 / `default_db_path` 分歧 / lock retry），还有给链顺序撑腰的 per-provider 性能数字。
+- [`../../fund-data/PROVIDERS.md`](../../fund-data/PROVIDERS.md) —— 怎么启用每个 provider、每个 provider 实际解锁什么、注册新 provider 的配方。
+- [`../../fund-data/SKILLS.md`](../../fund-data/SKILLS.md) —— Codex / Claude / OpenClaw 的 per-platform install 布局。
+- [`../../README.md` §Known gaps](../../README.md#known-gaps-tracked-for-030) —— v0.3.0 backlog（没 `--json` flag、没 HTTP/SSE MCP、没 progress 通知、没 `fund_doctor` MCP tool）。
+- [`../superpowers/specs/2026-06-02-fund-data-completeness-diagnosis.md`](../superpowers/specs/2026-06-02-fund-data-completeness-diagnosis.md) —— 撑起 Q2 两层失败策略和 380-snapshot-failure audit 的 per-table / per-fund_type 覆盖诊断。

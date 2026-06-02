@@ -1,514 +1,193 @@
-# Fund Coverage Playbook
+# Fund Coverage 剧本（Playbook）
 
-> **Last updated:** 2026-06-02
-> **Audience:** Anyone — human or AI — who gets asked "how do I
-> measure data completeness?", "is the backfill done yet?",
-> "which funds are missing NAV?", or "what does the 49 % stock
-> holdings coverage mean?". This is the **answer script** for
-> the read-only introspection layer. Pair with
-> [`fund-coverage-pipeline.md`](./fund-coverage-pipeline.md)
-> for diagrams and code anchors.
+> **最后更新:** 2026-06-02
+> **目标读者:** 任何人 —— 人或 AI —— 被问到"怎么衡量数据完整度？"、"backfill 跑完了吗？"、"哪些基金缺 NAV？"或"49% stock 持仓覆盖率是什么意思？"。这是 **只读内省层的回答脚本**。配套 [`fund-coverage-pipeline.md`](./fund-coverage-pipeline.md)（图表 + 代码锚点）一起看。
 >
-> **Use it when:**
-> - Onboarding a new operator or agent to the data plane.
-> - Reviewing a PR that touches `coverage_report`,
->   `coverage_report.py`, or `doctor.py`'s coverage
->   section.
-> - Debugging a report of "the backfill said ok=27000
->   but I have no data" or "the doctor says 100 % but
->   the agent says 49 %".
-> - Fielding a question about "naturally sparse"
->   datasets vs fixable gaps.
-> - Planning a new dataset addition.
+> **使用场景:**
+> - onboarding 新 operator 或 agent 进入数据平面。
+> - 审查涉及 `coverage_report`、`coverage_report.py` 或 `doctor.py` 的 coverage 部分的 PR。
+> - 排查"backfill 说 ok=27000 但我没数据"或"doctor 说 100% 但 agent 说 49%"这类报告。
+> - 回答关于"自然稀疏"数据集 vs 可修复缺口的问题。
+> - 计划新数据集添加。
 >
-> **Do NOT use it when:**
-> - The question is about the writer (backfill) →
->   use [`fund-batch-sync-pipeline.md`](./fund-batch-sync-pipeline.md).
-> - The question is about the distribution path →
->   use [`fund-cloud-bundle-pipeline.md`](./fund-cloud-bundle-pipeline.md).
-> - The question is about a single fund's data →
->   use [`fund-search-playbook.md`](./fund-search-playbook.md).
+> **不在使用场景之内:**
+> - 问题是关于 writer（backfill）→ 用 [`fund-batch-sync-pipeline.md`](./fund-batch-sync-pipeline.md)。
+> - 问题是关于分发路径 → 用 [`fund-cloud-bundle-pipeline.md`](./fund-cloud-bundle-pipeline.md)。
+> - 问题是关于单个基金的数据 → 用 [`fund-search-playbook.md`](./fund-search-playbook.md)。
 
 ---
 
-## TL;DR (60-second answer)
+## 60 秒答案（TL;DR）
 
-Coverage in `fund-data` is the **read-only introspection
-layer** that answers "is the data good enough for this
-question?" without writing any rows. There are two report
-modes:
+`fund-data` 的 coverage 是 **只读内省层**，回答"数据对这个 question 够好吗？"，不写任何行。有两种报告模式：
 
-- **Coverage mode** — per-dataset coverage % over the fund
-  universe, plus a per-fund **completeness score** in `[0, 1]`
-  and a per-fund `missing` list. The score is the equal-
-  weighted average of 8 datasets (`profile`, `nav`,
-  `stock_holdings`, `bond_holdings`, `industries`, `fees`,
-  `dividends`, `splits`). `fund_managers` is reported in
-  the row but does **not** count toward completeness.
-- **Stale mode** — funds whose newest snapshot or NAV is
-  older than `--max-age-hours` (default 24 h), or that have
-  neither. Used for "did the nightly backfill skip
-  something?".
+- **Coverage 模式** —— 在基金池上 per-dataset 覆盖率 %，加 per-fund **completeness 评分** `[0, 1]` 和 per-fund `missing` 列表（空数据集名）。评分是 8 个数据集（`profile`、`nav`、`stock_holdings`、`bond_holdings`、`industries`、`fees`、`dividends`、`splits`）的等权平均。`fund_managers` 在行里有报但 **不**算入 completeness。
+- **Stale 模式** —— 最新 snapshot 或 NAV 超过 `--max-age-hours`（默认 24 小时）的基金，或者两者都没有的。用来回答"夜间 backfill 是不是漏了什么？"。
 
-The defining characteristics are:
+定义性特征：
 
-- **Read-only.** Coverage runs `SELECT`, never
-  `INSERT/UPDATE/DELETE`. It is safe to call at any
-  point in a sync, and it does not move the data
-  forward.
-- **Two-tier aggregation.** Per-fund rows
-  (`completeness`, `missing`) are the input;
-  per-dataset % is derived from them. The % is
-  over the rows the filters produced, not the
-  whole universe.
-- **8 datasets, not 14.** `fund_managers` and the
-  3 audit tables (`raw_responses`, `sync_runs`,
-  `sync_failures`) are not part of the coverage
-  score. Manager data is directory-style; audit
-  tables are operator telemetry.
-- **Stale is per-fund, not per-dataset.** A fund
-  whose stock_holdings are 6 months old but whose
-  NAV is fresh is "stale" overall. The v0.3.0
-  backlog has a per-dataset staleness view.
+- **只读。** Coverage 跑 `SELECT`，从不 `INSERT/UPDATE/DELETE`。在 sync 任何点调都安全，不会推进数据。
+- **两层聚合。** Per-fund 行（`completeness`、`missing`）是输入；per-dataset % 是从它们派生的。% 是过滤器产出的行上的，不是整个池子。
+- **8 个数据集，不是 14 个。** `fund_managers` 和 3 个审计表（`raw_responses`、`sync_runs`、`sync_failures`）不在 coverage 评分里。Manager 数据是目录式的；审计表是 operator telemetry。
+- **Stale 是 per-fund，不是 per-dataset。** Stock 持仓 6 个月 stale 但 NAV fresh 的基金整体是"stale"。Per-dataset stale 视图在 v0.3.0 backlog。
 
 ---
 
-## The full answer template (use this skeleton)
+## 完整回答模板（用这个骨架）
 
-When asked "how does coverage work?", structure the answer
-in **four paragraphs**, one per concept. Order matters.
+当被问到"coverage 是怎么工作的？"，按这个结构回答，**四段对应四个概念**。顺序重要。
 
-### Paragraph 1 — Two modes
+### 第 1 段 —— 两种模式
 
-> `fund-data` has two read-only introspection modes.
-> **Coverage mode** answers "how complete is the data per
-> fund?" — it returns a list of dicts, one per fund, each
-> with a `completeness` score in `[0, 1]` (8-dataset
-> equal-weighted average) and a `missing` list of empty
-> dataset names. **Stale mode** answers "which funds
-> haven't been refreshed recently?" — it returns the funds
-> whose newest `snapshots.fetched_at` or `nav_history.fetched_at`
-> is older than `--max-age-hours` (default 24), or that
-> have no row at all. The two modes share the same DB
-> path; the rendering is different. Both are
-> `SELECT`-only and never write.
+> `fund-data` 有两种只读内省模式。**Coverage 模式**回答"每个基金的数据多完整？" —— 返回一个字典列表，每个基金一个，每个带一个 `[0, 1]` 的 `completeness` 评分（8 个数据集等权平均）和一个空数据集名的 `missing` 列表。**Stale 模式**回答"哪些基金最近没刷过？" —— 返回最新 `snapshots.fetched_at` 或 `nav_history.fetched_at` 超过 `--max-age-hours`（默认 24）的基金，或者根本没有行的。两种模式共用同一个 DB 路径；渲染不同。都是 `SELECT`-only，从不写。
 
-### Paragraph 2 — The 8 datasets
+### 第 2 段 —— 8 个数据集
 
-> The coverage score is over **8 datasets**:
-> `profile`, `nav`, `stock_holdings`, `bond_holdings`,
-> `industries`, `fees`, `dividends`, `splits`. Each
-> dataset is checked with a SQL `case when ... is null
-> then 0 else 1` over a `LEFT JOIN` from the `funds`
-> table. A fund with all 8 present has `completeness = 1.0`
-> and `missing = []`. A fund with 4 present has
-> `completeness = 0.5` and `missing` lists the other 4.
-> `fund_managers` is in the SQL output (`manager_rows`
-> column) but does not count toward completeness. The 3
-> audit tables (`raw_responses`, `sync_runs`,
-> `sync_failures`) are not in the score at all.
+> Coverage 评分覆盖 **8 个数据集**：`profile`、`nav`、`stock_holdings`、`bond_holdings`、`industries`、`fees`、`dividends`、`splits`。每个数据集用 SQL `case when ... is null then 0 else 1` 跨从 `funds` 表的 `LEFT JOIN` 检查。8 个都齐的基金有 `completeness = 1.0` 和 `missing = []`。4 个齐的基金有 `completeness = 0.5` 和 `missing` 列其他 4 个。`fund_managers` 在 SQL 输出里（`manager_rows` 列）但不计入 completeness。3 个审计表（`raw_responses`、`sync_runs`、`sync_failures`）完全不在评分里。
 
-### Paragraph 3 — Naturally sparse vs fixable
+### 第 3 段 —— 自然稀疏 vs 可修复
 
-> Some datasets are expected to be empty for some fund
-> types. **Naturally sparse** means the fund type does
-> not carry that dataset by design: bond funds have no
-> `stock_holdings`, money-market funds have no
-> `stock_holdings` or `bond_holdings`, REITs have no
-> public disclosure, and most funds do not pay dividends
-> or split. The "global" coverage numbers in AGENTS.md
-> are inflated by these funds; the per-fund_type
-> breakdown shows the structural gap. **Fixable** means
-> the dataset should be there but is missing: profile
-> empty for a fund that should have one, NAV empty
-> after a sync, holdings empty after a quarterly report
-> that should have been picked up. Coverage does not
-> distinguish naturally sparse from fixable; it just
-> reports "is the row present or not". An agent that
-> wants the fund_type-aware view should filter by
-> `fund_type`.
+> 一些数据集对一些基金类型期望就是空的。**自然稀疏**意思是那种基金类型按设计就不带那个数据集：债券型基金没 `stock_holdings`、货币型基金没 `stock_holdings` 也没 `bond_holdings`、REITs 没公开披露、大多数基金不分红或不拆分。AGENTS.md 里的"全局"覆盖率数字被这些基金夸大了；per-fund_type 分解显示结构性缺口。**可修复**意思是数据集应该在那里但缺了：应该有 profile 的基金 profile 空，sync 后 NAV 空，应该被接住的季度报告 holdings 空。Coverage 不区分自然稀疏和可修复；它只报"行在不在"。想要 fund_type 感知视图的 agent 应该按 `fund_type` filter。
 
-### Paragraph 4 — Stale mode
+### 第 4 段 —— Stale 模式
 
-> Stale mode is the "did the backfill skip something?"
-> check. A fund is stale if its newest `snapshots.fetched_at`
-> is older than the cutoff (default 24 hours), **or** its
-> newest `nav_history.fetched_at` is older than the
-> cutoff, **or** either timestamp is null. The cutoff
-> is `utc_now() - max_age_hours`. The default 24 hours
-> is a coarse threshold; for a nightly backfill that
-> runs at 03:00, `--max-age-hours 36` is more accurate
-> (a fund refreshed at 03:00 today is "stale" by 03:00
-> tomorrow morning, even though the data is one day
-> old). The CLI invocation is
-> `coverage_report.py --stale --max-age-hours 36`. The
-> stale mode is per-fund, not per-dataset — a fund
-> whose stock_holdings are 6 months old but whose NAV
-> is fresh is "stale" overall. A per-dataset staleness
-> view is on the v0.3.0 backlog.
+> Stale 模式是"backfill 是不是漏了什么？"检查。一个基金是 stale 如果它最新的 `snapshots.fetched_at` 超过 cutoff（默认 24 小时），**或**它最新的 `nav_history.fetched_at` 超过 cutoff，**或**任一时间戳是 null。Cutoff 是 `utc_now() - max_age_hours`。默认 24 小时是粗的阈值；对于 03:00 跑的夜间 backfill，`--max-age-hours 36` 更准（今天 03:00 刷的基金到明天 15:00 都算 fresh，尽管数据是一天前的）。CLI 调用是 `coverage_report.py --stale --max-age-hours 36`。Stale 模式是 per-fund 不是 per-dataset —— stock 持仓 6 个月 stale 但 NAV fresh 的基金整体是"stale"。Per-dataset stale 视图在 v0.3.0 backlog。
 
 ---
 
-## The 12 most-asked questions (with full answers)
+## 12 个最常被问到的问题（含详细答案 + 为什么这么设计）
 
-These are the questions that come up the most in onboarding,
-support, and PR review. **Answer them in the order they
-appear here, with the same level of detail** — these are
-the explanations the team has settled on after multiple
-rounds of "but why?".
+下面这些问题是在 onboarding、support、PR review 中最常出现的。**按这里出现的顺序回答，用同样的详细程度** —— 这些是团队经过多轮"但为什么？"之后沉淀下来的解释。
 
-### Q1. Why 8 datasets and not all 14?
+### Q1. 为什么是 8 个数据集，不是所有 14 个？
 
-- **The 8 datasets are the agent's data plane.** `profile`,
-  `nav`, `stock_holdings`, `bond_holdings`, `industries`,
-  `fees`, `dividends`, `splits` are the tables the agent
-  reads at runtime to answer fund questions.
-- **`fund_managers` is directory-style data.** A fund's
-  manager record is a directory lookup, not a per-fund
-  data plane. Including it in the completeness score
-  would penalise funds whose manager records have moved
-  to a different fund, which is a common event (managers
-  rotate funds frequently).
-- **The 3 audit tables are operator telemetry.**
-  `raw_responses` (full upstream HTTP bodies; may
-  contain caller IP), `sync_runs` (every sync call's
-  audit row), `sync_failures` (every hard-failed sync
-  call's queue row). An agent on a different machine
-  has no use for them.
-- **The split is the privacy boundary too.** The query
-  bundle (`fund-cloud-bundle-pipeline.md` §3.2) strips
-  the audit tables; coverage follows the same logic.
+- **8 个数据集是 agent 的数据平面。** `profile`、`nav`、`stock_holdings`、`bond_holdings`、`industries`、`fees`、`dividends`、`splits` 是 agent 在运行时读的表，回答基金问题。
+- **`fund_managers` 是目录式数据。** 一个基金有 0-N 经理在它的生命周期里；行数告诉你"我们对这个基金的经理历史有多少记录"，不是"这个基金完整吗"。
+- **3 个审计表是 operator telemetry。** `raw_responses`（完整上游 HTTP body；可能含调用方 IP）、`sync_runs`（每次 sync 调用的 audit 行）、`sync_failures`（每次硬失败 sync 调用的队列行）。不同机器上的 agent 用不到它们。
+- **分割也是隐私边界。** Query bundle（`fund-cloud-bundle-pipeline.md` §3.2）剥掉审计表；coverage 遵循同样逻辑。
 
-### Q2. Why is `fund_managers` in the row output but not in the completeness score?
+### Q2. 为什么 `fund_managers` 在行输出里但不在 completeness 评分里？
 
-- **Manager data is a directory, not a dataset.** A fund
-  has 0-N managers over its lifetime; the row count
-  tells you "how many records do we have for this fund's
-  manager history", not "is the fund complete".
-- **Manager records are noisy.** A fund's manager may
-  change every quarter; the count fluctuates. Including
-  the count in completeness would make the score
-  unstable.
-- **The agent can still query manager data via
-  `fund_managers(code=...)`.** The data is available; it
-  is just not part of the headline score.
+- **Manager 数据是目录，不是数据集。** 一个基金有当前和历史的经理；计数告诉你"我们对这个基金的经理历史有多少记录"，不是"基金完整吗"。
+- **经理记录有噪声。** 基金的经理可能每个季度换；计数会波动。把计数包含进 completeness 会让评分不稳定。
+- **Agent 仍然可以通过 `fund_managers(code=...)` 查询经理数据。** 数据是可用的；它就是不在头条评分里。
 
-### Q3. Why is the completeness score equal-weighted, not weighted by importance?
+### Q3. 为什么 completeness 评分是等权的，不是按重要性加权？
 
-- **Equal weighting is the simplest correct answer.**
-  Every dataset is `1/8` of the score. An agent that
-  wants a different weighting can compute it from the
-  per-row dicts.
-- **The team has considered NAV-weighted** (NAV is the
-  most important dataset, so weight it more). The
-  trade-off is "is the weight choice documented and
-  stable across releases?". Equal weighting is stable;
-  any other weighting would need a schema migration.
-- **The score is a hint, not a verdict.** A `completeness
-  = 0.5` fund may have profile + nav + stock_holdings +
-  fees (the four most common agent queries), which is
-  "good enough" for most questions. The score is a
-  one-number summary, not a per-question fitness
-  indicator.
+- **等权是最简单又正确的答案。** 每个数据集是 `1/8` 的评分。想要不同加权的 agent 可以从 per-fund 字典里自己算。
+- **团队考虑过 NAV 加权**（NAV 是最重要的数据集，所以权重更高）。权衡是"权重选择有文档支持、跨 release 稳定吗？"。等权稳定；任何其他权重需要 schema 迁移。
+- **评分是提示，不是判决。** `completeness = 0.5` 的基金可能有 profile + nav + stock_holdings + fees（最常见的 4 个 agent 查询），对大多数问题"够好"。评分是单数字汇总，不是 per-question 适配指标。
 
-### Q4. Why does the per-dataset % in the markdown header depend on the filters?
+### Q4. 为什么 markdown header 里的 per-dataset % 取决于过滤器？
 
-- **The renderer aggregates over the rows it received.**
-  If the caller passes `fund_type='股票型'`, the per-
-  dataset % is over the stock-type funds, not the
-  whole universe. This is a feature, not a bug: an
-  operator that wants "stock-type coverage" gets it
-  without a second pass.
-- **The "global" view** is `coverage_report()` with no
-  filter. The markdown header reads
-  `funds: <total> • reported: <reported>` to make the
-  difference explicit.
-- **An agent that wants both views** should call twice:
-  once with no filter (the universe), once with
-  `fund_type` (the per-type view). The cost is two
-  SQL queries; both are sub-second on a 27k-fund
-  database.
+- **Renderer 在它收到的行上聚合。** 调用方传 `fund_type='股票型'`，per-dataset % 是股票型基金上的，不是整个池。这是 feature 不是 bug：想要"股票型 coverage"的 operator 不用第二次 pass。
+- **"全局"视图**是 `coverage_report()` 不带过滤器。Markdown header 读 `funds: <total> • reported: <reported>` 让差异显式。
+- **想要两个视图的 agent**应该调两次：一次不带过滤器（池），一次带 `fund_type`（per-type 视图）。代价是两次 SQL 查询；两个在 27k 基金 DB 上都是亚秒级。
 
-### Q5. Why is the stale threshold 24 hours, and when should I change it?
+### Q5. 为什么 stale 阈值是 24 小时，什么时候改？
 
-- **24 hours is a coarse default.** It catches "the
-  nightly backfill ran and 5 % of funds were skipped"
-  but is too noisy for "did the 03:00 backfill refresh
-  100 % of the universe?".
-- **For a daily backfill that runs at 03:00**, use
-  `--max-age-hours 36`. A fund refreshed at 03:00 today
-  is "fresh" until 15:00 tomorrow, even though the
-  data is one day old.
-- **For a weekly backfill**, use `--max-age-hours 192`
-  (8 days). The threshold is "the data should not be
-  older than the backfill cadence plus a margin".
-- **For an on-demand pull**, use `--max-age-hours 1`. A
-  fund that has not been touched in the last hour is
-  stale because the on-demand pull is expected to be
-  current.
+- **24 小时是粗默认。** 它能抓住"夜间 backfill 跑了 5% 基金被跳过"，但对"03:00 backfill 刷了 100% 池吗？"太噪。
+- **对于 03:00 跑的日常 backfill**，用 `--max-age-hours 36`。今天 03:00 刷的基金到明天 15:00 都算 fresh，尽管数据是一天前的。
+- **对于每周 backfill**，用 `--max-age-hours 192`（8 天）。阈值是"数据不应该比 backfill 节奏 + 边距更老"。
+- **对于 on-demand pull**，用 `--max-age-hours 1`。过去一小时没碰过的基金是 stale，因为 on-demand pull 期望是当下的。
 
-### Q6. Why is stale mode per-fund, not per-dataset?
+### Q6. 为什么 stale 模式是 per-fund，不是 per-dataset？
 
-- **The MVP was per-fund.** The team's first iteration
-  was "is this fund stale?" — the per-dataset view is a
-  follow-up.
-- **Per-dataset staleness is more useful for diagnosis.**
-  A fund whose NAV is fresh but stock_holdings are
-  6 months old has a real problem (the quarterly
-  report pick-up failed). Per-fund staleness hides
-  this; per-dataset staleness surfaces it.
-- **The v0.3.0 backlog has the per-dataset view.** The
-  implementation is straightforward — a SQL with
-  `max(fetched_at)` per table — but the renderer
-  needs a new column shape and the markdown header
-  needs new aggregate lines.
+- **MVP 是 per-fund。** 团队第一个迭代是"这个基金 stale 吗？" —— per-dataset 视图是后续。
+- **Per-dataset staleness 对诊断更有用。** Stock 持仓 stale 但 NAV fresh 的基金有真问题（季度报告接住失败了）。Per-fund staleness 藏了这个；per-dataset staleness 暴露它。
+- **V0.3.0 backlog 有 per-dataset 视图。** 实现直白 —— 一个 SQL 带 per 表 `max(fetched_at)` —— 但 renderer 需要新列形状，markdown header 需要新聚合行。
 
-### Q7. Why does `coverage_report` not know about fund_type when computing the score?
+### Q7. 为什么 `coverage_report` 在算分时不知道 fund_type？
 
-- **The SQL is a generic 8-table LEFT JOIN.** Knowing
-  about fund_type would require the SQL to JOIN
-  `funds.fund_type` and apply per-type rules, which is
-  a much more complex query and harder to maintain.
-- **The agent / operator filters by fund_type** in the
-  `WHERE` clause. The per-type view is computed by
-  passing `--fund-type 股票型` (or equivalent in code).
-- **The trade-off is simplicity vs. accuracy.** The
-  team chose simplicity. The "global" coverage numbers
-  in AGENTS.md are the headline; the per-type numbers
-  are a follow-up drilldown.
+- **SQL 是通用的 8 表 LEFT JOIN。** 知道 fund_type 需要 SQL JOIN `funds.fund_type` 然后应用 per-type 规则，这是更复杂更难维护的查询。
+- **Agent / operator 在 `WHERE` 子句里按 fund_type 过滤。** Per-type 视图通过传 `--fund-type 股票型`（或代码中等价的）来计算。
+- **权衡是简单性 vs 准确度。** 团队选了简单。AGENTS.md 里的"全局"覆盖率数字是头条；per-type 数字是后续 drilldown。
 
-### Q8. Why does coverage use `LEFT JOIN` instead of separate `EXISTS` subqueries?
+### Q8. 为什么 coverage 用 `LEFT JOIN` 而不是分开的 `EXISTS` 子查询？
 
-- **`LEFT JOIN` is a single SQL pass.** The 8 tables
-  join in one round trip; the case-when checks the
-  nullability of the join keys. A separate `EXISTS`
-  query per table would be 8 round trips.
-- **The LEFT JOIN handles missing tables gracefully.**
-  If `fund_profiles` does not exist (the DB is half-
-  built), the LEFT JOIN returns null and the case-when
-  reports 0; an `EXISTS` query against a non-existent
-  table would raise `OperationalError`.
-- **The cost is a wide result row.** The 8-table join
-  produces a row with all 8 `*_rows` columns; the
-  per-row dict is wide. The trade-off is one wide
-  row vs. eight narrow ones. SQLite is optimised for
-  wide rows in the same query.
+- **`LEFT JOIN` 是单 SQL pass。** 8 张表 join 在一次 round trip；case-when 检查 join key 的 nullability。分开 `EXISTS` 一次一表就是 8 次 round trip。
+- **`LEFT JOIN` 优雅处理缺失表。** 如果 `fund_profiles` 不存在（DB 半建），LEFT JOIN 返回 null，case-when 报 0；针对不存在表的 `EXISTS` 查询会抛 `OperationalError`。
+- **代价是宽结果行。** 8 表 join 产生一行带所有 8 个 `*_rows` 列的行；per-fund 字典宽。权衡是一个宽行 vs 八个窄行。SQLite 优化了同查询里的宽行。
 
-### Q9. Why does the doctor's coverage section not match the in-process report?
+### Q9. 为什么 doctor 的 coverage 段跟进程内报告不匹配？
 
-- **`doctor.py` reads from the on-disk DB**;
-  `coverage_report` reads from `default_db_path()`,
-  which prefers the OSS cache. The two are different
-  DBs after a `cloud pull`.
-- **The team's "Long-running pitfalls" note in
-  AGENTS.md** documents this as the most common "wrong
-  DB" report. An agent that wants the doctor to
-  report the cache numbers should pass
-  `FUND_DATA_DB=/path/to/cache/.../fund_data_query.sqlite`
-  to doctor, or unset the env var to force the
-  fallback.
-- **The two views are intentional.** Doctor is the
-  operator's view of the production DB; the in-process
-  report is the agent's view of whatever DB the
-  bootstrap resolved. Conflating them would lose the
-  signal.
+- **`doctor.py` 读本机 DB**；`coverage_report` 读 `default_db_path()`，优先 OSS cache。`cloud pull` 之后两个是不同的 DB。
+- **AGENTS.md 里的"Long-running pitfalls"笔记**把这点文档化为最常见的"错 DB"报告。想要 doctor 报 cache 数字的 agent 应该传 `FUND_DATA_DB=/path/to/cache/.../fund_data_query.sqlite` 给 doctor，或者 unset env var 强制 fallback。
+- **两个视图是有意的。** Doctor 是 operator 看生产 DB 的视图；进程内报告是 agent 看 bootstrap 解析出来的 DB 的视图。混了会丢信号。
 
-### Q10. Why is `coverage_report` exposed as both an MCP tool and a Python helper?
+### Q10. 为什么 `coverage_report` 既作为 MCP tool 又作为 Python helper 暴露？
 
-- **The MCP tool is for agents.** An OpenClaw daemon
-  that wants to check coverage calls
-  `fund_coverage_report` and gets the structured
-  payload.
-- **The Python helper is for humans and embedded
-  use.** An operator that wants to add a coverage
-  check to a custom script imports `coverage_report`
-  directly.
-- **Both wrap the same SQL.** The MCP tool calls the
-  Python helper; the helper calls the same SQL. There
-  is no "MCP version" vs "CLI version" divergence.
-  A change in the helper is automatically a change in
-  the tool.
+- **MCP tool 是给 agent 的。** OpenClaw daemon 想检查 coverage 调 `fund_coverage_report` 拿到结构化 payload。
+- **Python helper 是给人用的，给嵌入式场景。** Operator 想给自定义脚本加 coverage 检查直接 import `coverage_report`。
+- **两个都包同一个 SQL。** MCP tool 调 Python helper；helper 调同一个 SQL。没"MCP 版本" vs "CLI 版本"分歧。Helper 里的改动自动是 tool 里的改动。
 
-### Q11. Why does the renderer not include `fund_managers` in the `missing` list?
+### Q11. 为什么 renderer 不把 `fund_managers` 包含进 `missing` 列表？
 
-- **`fund_managers` is not in the 8-dataset score.** A
-  fund with no manager row but with all 8 datasets
-  present has `completeness = 1.0` and `missing = []`,
-  even though `manager_rows = 0`.
-- **Adding `fund_managers` to the `missing` list
-  would be inconsistent** — the score says 1.0 but
-  the missing list says "managers" is empty.
-- **The team's choice is to report `manager_rows` as
-  a column for introspection** but not count it in
-  the score. The `missing` list is consistent with
-  the score.
+- **`fund_managers` 不在 8 数据集评分里。** 没经理行但 8 个数据集都齐的基金有 `completeness = 1.0` 和 `missing = []`，尽管 `manager_rows = 0`。
+- **把 `fund_managers` 加到 `missing` 列表会不一致** —— 评分说 1.0 但 missing 列表说"managers"空。
+- **团队的选择是把 `manager_rows` 作为内省用的列报**，但不计入评分。`missing` 列表跟评分一致。
 
-### Q12. Why does the markdown renderer show the top 10 most-incomplete funds, and the table renderer show 200?
+### Q12. 为什么 markdown renderer 显示 top 10 最不完整，table renderer 显示 200？
 
-- **The markdown is for PR descriptions and chat
-  messages.** 10 rows is the upper limit for "human
-  reads this"; more would be noise.
-- **The table is for terminal review.** 200 rows is
-  the upper limit for a readable fixed-width table
-  in a 100-column terminal. More would wrap.
-- **The JSON output is for downstream tooling.** No
-  limit (well, the `limit` parameter) — the consumer
-  can handle the full list.
-- **The three limits reflect the three consumers.**
-  An agent that wants the full list uses
-  `--format json --limit 0` (or no limit). The
-  default `--limit 10` on markdown is the human-
-  reader sweet spot.
+- **Markdown 是给 PR 描述和聊天消息的。** 10 行是人类读的"上限"；更多是噪声。
+- **Table 是给终端 review 的。** 200 行是 100 列终端可读固定宽表的上限。更多会折行。
+- **JSON 输出是给下游工具的。** 无限制（好吧，`limit` 参数）—— 消费者能处理完整列表。
+- **三个限制反映三个消费者。** 想要完整列表的 agent 用 `--format json --limit 0`（或不带 limit）。Markdown 默认 `--limit 10` 是人类读者的甜点。
 
 ---
 
-## Design philosophy (the "why" of the two-mode shape)
+## 设计哲学（为什么两模式是这个形状）
 
-Read this section once and the rest of the playbook
-becomes obvious.
+读完这一节，剩下的 playbook 就显而易见了。
 
-1. **Coverage is read-only.** The SQL is `SELECT`,
-   never `INSERT/UPDATE/DELETE`. Coverage can run
-   during a sync without interfering. An agent that
-   wants a "is the data ready?" check calls coverage
-   after a backfill batch; the coverage report
-   reflects the rows committed so far.
-2. **The 8-dataset score is a one-number summary.**
-   It is not a per-question fitness indicator. A
-   fund with `completeness = 0.5` may be "good
-   enough" for the most common agent queries
-   (profile + nav + holdings + fees) and "not good
-   enough" for a dividend analysis. The agent
-   decides per-question.
-3. **Equal weighting is the simplest correct
-   answer.** Any other weighting would need a schema
-   migration and a documentation burden. The team's
-   choice is "equal + simple".
-4. **`fund_managers` is directory-style, not
-   data-plane.** It is reported in the row for
-   introspection but does not count toward the
-   score. Manager rotations would destabilise the
-   score; the team prefers stability.
-5. **Stale is per-fund, not per-dataset.** The MVP
-   is per-fund; the per-dataset view is a v0.3.0
-   follow-up. The team chose to ship the simpler
-   version first.
-6. **The 24-hour threshold is a coarse default.**
-   Operators tune it via `--max-age-hours` to match
-   their backfill cadence. The default is for
-   evaluators who have not yet measured their
-   cadence; production deployments set it to
-   `cadence + margin`.
-7. **Doctor and the in-process report are different
-   views.** Doctor reads the on-disk DB; the
-   in-process report reads `default_db_path()`. The
-   two diverge when a backfill writes to the cache
-   DB. The team's "Long-running pitfalls" note
-   documents the divergence; the fix is to set
-   `FUND_DATA_DB` explicitly for the backfill run.
-8. **The renderer is split by consumer.** Markdown
-   for humans (PR descriptions, chat), table for
-   terminals (quick review), JSON for downstream
-   tooling (agents, scripts). The three limits
-   (10, 200, unlimited) match the three
-   consumers' readability thresholds.
+1. **Coverage 是只读的。** SQL 是 `SELECT`，从不 `INSERT/UPDATE/DELETE`。Coverage 可以在 sync 期间跑而不干扰。想做"数据准备好了吗？"检查的 agent 在 backfill batch 之后调 coverage；coverage 报告反映到目前为止提交的 rows。
+2. **8 数据集评分是单数字汇总。** 它不是 per-question 适配指标。`completeness = 0.5` 的基金可能对最常见的 agent 查询（profile + nav + holdings + fees）"够好"，对红利分析"不够好"。Agent 决定 per-question。
+3. **等权是最简单又正确的答案。** 任何其他权重需要 schema 迁移和文档负担。团队选择"等 + 简单"。
+4. **`fund_managers` 是目录式，不是数据平面。** 它在行里为了内省报，但不计分。经理轮换会破坏评分；团队偏好稳定。
+5. **Stale 是 per-fund 不是 per-dataset。** MVP 是 per-fund；per-dataset 视图是 v0.3.0 后续。团队选择先发布更简单的版本。
+6. **24 小时阈值是粗默认。** Operator 通过 `--max-age-hours` 调以匹配他们的 backfill 节奏。默认是给还没测自己节奏的 evaluator；生产部署把它设成 `cadence + 边距`。
+7. **Doctor 和进程内报告是不同视图。** Doctor 读本机 DB；进程内报告读 `default_db_path()`。当 backfill 写到 cache DB 时两者分歧。AGENTS.md 里的"Long-running pitfalls"笔记文档化了分歧；修法是为 backfill run 显式设 `FUND_DATA_DB`。
+8. **Renderer 按消费者拆分。** Markdown 给人（PR 描述、聊天），table 给终端（快速 review），JSON 给下游工具（agent、脚本）。三个限制（10、200、无限制）匹配三个消费者的可读性阈值。
 
 ---
 
-## What NOT to say (anti-patterns)
+## 反面教材（不要这么说）
 
-These are common wrong answers the team has seen in PR
-reviews and support threads. Avoid them.
+这些是 PR review 和 support 线程里见过的常见错误回答。避开它们。
 
-- **"Coverage is global."** It is not. The per-dataset
-  % is over the rows the filters produced, not the
-  whole universe. An agent that wants the global
-  view should pass no filter; an agent that wants
-  the per-type view should pass `--fund-type`.
-- **"`completeness = 1.0` means the fund is fully
-  covered."** It means the 8 datasets are all
-  present. It does not mean the data is current
-  (use stale mode), accurate (no such check), or
-  complete at the row level (a fund with 1 NAV row
-  has the same `completeness` as one with 1000).
-- **"Stale means the data is wrong."** Stale means
-  the data is old. A 24-hour-stale NAV may still be
-  the best available; the agent decides whether to
-  refresh.
-- **"Doctor and the in-process report should
-  agree."** They can diverge; the divergence is
-  intentional and documented. The fix is to align
-  the DB paths, not to align the reports.
-- **"Run coverage after every sync to verify."**
-  Coverage is a `SELECT`; running it 27k times in
-  a backfill would slow the backfill down. The
-  team's guidance is to run coverage once at the
-  end of the backfill, not per-fund.
-- **"`fund_managers = 0` is a coverage miss."** It
-  is not. `fund_managers` is not in the 8-dataset
-  score; the column is for introspection. A fund
-  with no manager row but with all 8 datasets
-  present is fully covered.
-- **"Naturally sparse datasets inflate the global
-  coverage number."** They do. The team's
-  AGENTS.md §Coverage by `fund_type` shows the
-  per-type breakdown. An agent that wants the
-  type-aware view should filter.
-- **"The completeness score is the percentage of
-  funds covered."** It is the percentage of the 8
-  datasets present per fund, weighted equally. A
-  fund with 4 of 8 datasets has `completeness
-  = 0.5`, not "50 % coverage".
+- **"Coverage 是全局的。"** 不是。Per-dataset % 是过滤器产出的行上的，不是整个池。想要全局视图的 agent 应该不传过滤器；想要 per-type 视图的应该传 `--fund-type`。
+- **"`completeness = 1.0` 表示基金完全覆盖了。"** 表示 8 个数据集都齐。不表示数据是当下的（用 stale 模式）、准确的（没那种检查）、行级完整的（有 1 个 NAV 行的基金跟有 1000 个的有同样 `completeness`）。
+- **"Stale 意味着数据是错的。"** Stale 意味着数据是老的。24 小时 stale 的 NAV 可能仍然是最好的可用的；agent 决定要不要刷新。
+- **"Doctor 和进程内报告应该一致。"** 它们可以分歧；分歧是有意的和文档化的。修法是对齐 DB 路径，不是对齐报告。
+- **"每次 sync 后跑 coverage 验证。"** Coverage 是 `SELECT`；在 backfill 里跑它 27k 次会拖慢 backfill。团队建议是 backfill 末尾跑一次 coverage，不是 per-fund。
+- **"`fund_managers = 0` 是 coverage miss。"** 不是。`fund_managers` 不在 8 数据集评分里；列是为了内省。没经理行但 8 个数据集都齐的基金是全覆盖。
+- **"自然稀疏数据集夸大了全局覆盖率数字。"** 是。AGENTS.md §Coverage by `fund_type` 显示 per-type 分解。想要类型感知视图的 agent 应该过滤。
+- **"Completeness 评分是覆盖基金的百分比。"** 是基金 8 个数据集的现存的百分比，等权。4/8 数据集的基金有 `completeness = 0.5`，不是"50% 覆盖"。
 
 ---
 
-## How to keep this playbook accurate
+## 怎么保持这个剧本准确
 
-The playbook is the team's *settled* explanation, not
-the live code. When the code changes, update the
-playbook in the same PR. The check is:
+剧本是团队 *settled* 的解释，不是 live 代码。代码变了，在同一个 PR 里更新剧本。检查项：
 
-- A dataset is added to or removed from
-  `coverage_report` (the 8-dataset list) → update
-  §3 and the completeness definition.
-- A new entry point is added (e.g.
-  `fund_coverage_diff`) → update §4.
-- The output shape changes (a field added/removed
-  in the dict) → update §5.
-- The stale threshold default changes → update
-  §3.2 and §6.
-- A new filter is added (e.g.
-  `min_manager_rows`) → update §6.
-- A renderer limit changes (markdown 10, table
-  200) → update §6 and Q12.
+- 数据集加进或从 `coverage_report` 移除（8 数据集列表）→ 更新 §3 和 completeness 定义。
+- Stale 阈值默认变了 → 更新 §3.2 和 §6。
+- 新入口加进来（比如 `fund_coverage_diff` MCP tool 比较两个 snapshot）→ 更新 §4。
+- 输出形状变了（字典加/删字段）→ 更新 §5。
+- 新过滤器加进来（比如 `min_manager_rows`）→ 更新 §6。
+- Renderer 限制变了（markdown 10、table 200）→ 更新 §6 和 Q12。
 
-If a PR changes any of the above and does not update
-the playbook, request changes with a pointer to this
-section.
+如果 PR 改了上面任何一项但没更新剧本，request changes 时指这一节。
 
 ---
 
-## Related documents
+## 相关文档
 
-- [`fund-coverage-pipeline.md`](./fund-coverage-pipeline.md) —
-  diagrams + code anchors + result shape.
-- [`fund-batch-sync-pipeline.md`](./fund-batch-sync-pipeline.md) —
-  the writer of the data that coverage measures.
-- [`fund-cloud-bundle-pipeline.md`](./fund-cloud-bundle-pipeline.md) —
-  the distribution path that lands a fresh agent at
-  a known coverage state.
-- [`fund-search-playbook.md`](./fund-search-playbook.md) —
-  the single-search answer script (for
-  `fund_coverage` / `fund_coverage_report` tools).
-- [`../../fund-data/SKILL.md`](../../fund-data/SKILL.md) —
-  the agent-facing skill manifest.
-- [`../../fund-data/AGENTS.md`](../../fund-data/AGENTS.md) —
-  the per-fund_type coverage breakdown, the
-  long-running pitfalls (default_db_path vs doctor
-  divergence), and the operational checklist.
-- [`../superpowers/specs/2026-06-02-fund-data-completeness-diagnosis.md`](../superpowers/specs/2026-06-02-fund-data-completeness-diagnosis.md) —
-  the structural gap analysis (naturally sparse vs
-  fixable vs not-fixable vs 0.3.0 backlog).
-- [`../../README.md` §Known gaps](../../README.md#known-gaps-tracked-for-030) —
-  the v0.3.0 backlog items (per-dataset staleness,
-  fund_doctor MCP tool, etc.).
+- [`fund-coverage-pipeline.md`](./fund-coverage-pipeline.md) —— 图表 + 代码锚点 + 结果形状。
+- [`fund-batch-sync-pipeline.md`](./fund-batch-sync-pipeline.md) —— coverage 衡量的数据的 writer。
+- [`fund-cloud-bundle-pipeline.md`](./fund-cloud-bundle-pipeline.md) —— 让 fresh agent 落在已知 coverage 状态的分发路径。
+- [`fund-search-playbook.md`](./fund-search-playbook.md) —— 单次 search 的回答脚本（给 `fund_coverage` / `fund_coverage_report` tool 用）。
+- [`../../fund-data/SKILL.md`](../../fund-data/SKILL.md) —— agent-facing skill manifest。
+- [`../../fund-data/AGENTS.md`](../../fund-data/AGENTS.md) —— per-fund_type coverage 分解、长跑陷阱（default_db_path vs doctor 分歧）和操作清单。
+- [`../superpowers/specs/2026-06-02-fund-data-completeness-diagnosis.md`](../superpowers/specs/2026-06-02-fund-data-completeness-diagnosis.md) —— 结构性缺口分析（自然稀疏 vs 可修复 vs 不可修复 vs 0.3.0 backlog）。
+- [`../../README.md` §Known gaps](../../README.md#known-gaps-tracked-for-030) —— v0.3.0 backlog（per-dataset staleness、fund_doctor MCP tool 等）。
