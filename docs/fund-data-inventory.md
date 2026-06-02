@@ -415,12 +415,15 @@ oss://fund-data-public-l/fund-data/current/manifest.json
 
 **结论:** 业务表 340MB,raw 4.8GB。要瘦身,砍 `raw_responses fetched_at < '2025-01-01'` 即可。
 
-### 9.2 Public vs Private bucket ⚠️ 待修
+### 9.2 Public vs Private bucket ✅ 已验证(混合 ACL)
 
-- 预期:full DB 私有(`fund-data-private/...` 路径),query bundle 公开(`fund-data-public-l/fund-data/releases/...`)
-- 实际:看到 `fund-data/private/full/2026-06-02-091411/` 在 public bucket 里 — 路径段 `private` 在 public bucket,自相矛盾
-- 影响:全量 DB 包含 raw_responses,如果 ACL 是 public-read,API 调用历史会泄漏
-- 建议:把 full 路径段挪到真正的 private bucket(具体 bucket 名/ACL 状态需要再查)
+- 预期:full DB 私有,query bundle 公开
+- 实际:`fund-data-public-l` 是混合 ACL bucket(名字误导),通过 prefix 级别 ACL 实现分级:
+  - `fund-data/private/full/<date>/` → **403 Forbidden**(匿名拒绝,显式 private)
+  - `fund-data/releases/<date>/` → **200 OK**(匿名可访问,public)
+- 验证方式:`curl -sI https://fund-data-public-l.oss-cn-shanghai.aliyuncs.com/fund-data/private/full/<date>/fund_data_full.sqlite.gz` → 403
+- 结论:无泄漏。`private/` 路径段命名有点反直觉(把 private 数据塞进 public-named bucket),但实际 ACL 配对了
+- 改进方向(可选):重命名 bucket 为 `fund-data-mixed-l` 或拆成两个 bucket,但 ACL 既然对了,不是 blocker
 
 ### 9.3 Agent 友好度
 
