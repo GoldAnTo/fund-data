@@ -54,7 +54,7 @@ jobs:
           #                              binary inside:  ossutil64
           curl -sSL -o /tmp/ossutil.zip \
             https://github.com/aliyun/ossutil/releases/download/v1.7.18/ossutil-v1.7.18-linux-amd64.zip
-          unzip -q /tmp/ossutil.zip -d /tmp/ossutil
+          unzip -jq /tmp/ossutil.zip -d /tmp/ossutil
           sudo mv /tmp/ossutil/ossutil /usr/local/bin/ossutil
           rm -rf /tmp/ossutil /tmp/ossutil.zip
           ossutil --version
