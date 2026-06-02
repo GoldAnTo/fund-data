@@ -12,14 +12,18 @@ try:
     from . import doctor as doctor_module
 except ImportError:  # pragma: no cover - exercised by direct script execution
     import fund_cloud
-
     import fund_data
-
     import doctor as doctor_module  # type: ignore[no-redef]
+
+# Apply the macOS proxy / IPv4 / sqlite-timeout patches BEFORE
+# any module opens a network socket or sqlite connection.
+# Idempotent; no-op on Linux / Windows runners.
+from _net_compat import apply as _apply_net_compat  # noqa: E402
+
+_apply_net_compat()
 
 
 PROVIDER_CHOICES = ["auto", "eastmoney", "akshare", "investoday", "tushare"]
-
 
 def _read_offline_raw(path: str | None) -> str | None:
     if not path:
