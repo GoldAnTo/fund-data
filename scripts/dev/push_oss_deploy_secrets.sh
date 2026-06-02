@@ -23,10 +23,10 @@ if [ -z "$ak" ] || [ -z "$sk" ]; then
 fi
 
 echo "Setting OSS_DEPLOY_KEY_ID on ${REPO}..."
-printf '%s' "$ak" | gh secret set OSS_DEPLOY_KEY_ID --repo "$REPO" -
+gh secret set OSS_DEPLOY_KEY_ID --repo "$REPO" --body "$ak"
 
 echo "Setting OSS_DEPLOY_KEY_SECRET on ${REPO}..."
-printf '%s' "$sk" | gh secret set OSS_DEPLOY_KEY_SECRET --repo "$REPO" -
+gh secret set OSS_DEPLOY_KEY_SECRET --repo "$REPO" --body "$sk"
 
 echo "Done. Verifying:"
 gh secret list --repo "$REPO" | grep -E "OSS_DEPLOY_KEY_(ID|SECRET)" || {
