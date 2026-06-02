@@ -686,10 +686,14 @@ def upload_to_oss(
         raise FileNotFoundError(f"missing sha256 sidecar: {sha_path}")
 
     # The release id is the directory name. build_bundle
-    # writes ``{version}/`` to keep every release immutable --
-    # an updated dataset lives under a new directory and the
-    # current/ pointer is republished.
-    version = _safe_version(release_path.name)
+    # Read the version from the manifest so the release directory name
+    # (e.g. "nightly-release") does not contaminate the OSS key. If no
+    # manifest is provided, fall back to the directory name.
+    if manifest_path is not None:
+        manifest_data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        version = str(manifest_data["version"])
+    else:
+        version = _safe_version(release_path.name)
     release_prefix = f"{prefix}/releases/{version}"
     archive_remote = f"oss://{bucket}/{release_prefix}/{QUERY_ARCHIVE_NAME}"
     sha_remote = f"oss://{bucket}/{release_prefix}/{QUERY_ARCHIVE_NAME}.sha256"
@@ -709,15 +713,16 @@ def upload_to_oss(
     # Verify the release file is accessible on OSS before updating the
     # manifest pointer. Prevents a cascading 404 if the upload silently
     # fails (ossutil returns 0 even on partial writes to some backends).
+    # Use curl subprocess to avoid Python proxy/autoproxy on CI runners.
     if not dry_run:
-        import urllib.request as _ur, urllib.error as _ue
+        import subprocess as _sub
         file_url = f"{base_url}/{archive_remote.removeprefix(f'oss://{bucket}/')}"
-        try:
-            resp = _ur.urlopen(file_url, timeout=15)
-            if resp.status != 200:
-                raise RuntimeError(f"OSS verification failed for {file_url}: HTTP {resp.status}")
-        except _ue.HTTPError as exc:
-            raise RuntimeError(f"OSS verification failed for {file_url}: HTTP {exc.code}")
+        cr = _sub.run(
+            ["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "15", file_url],
+            capture_output=True, text=True,
+        )
+        if cr.stdout.strip() != "200":
+            raise RuntimeError(f"OSS verification failed for {file_url}: HTTP {cr.stdout.strip()}")
 
     manifest_url = ""
     if manifest_path is not None:
