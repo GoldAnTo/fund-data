@@ -71,13 +71,21 @@ jobs:
           # ossutil 1.7.x: ~/.ossutilconfig must be a regular file, not a dir
           rm -rf ~/.ossutilconfig
           cat > ~/.ossutilconfig <<EOF
-          [default]
-          accessKeyId=${{ secrets.OSS_DEPLOY_KEY_ID }}
+          [Credentials]
+          accessKeyID=${{ secrets.OSS_DEPLOY_KEY_ID }}
           accessKeySecret=${{ secrets.OSS_DEPLOY_KEY_SECRET }}
           region=cn-shanghai
           endpoint=https://oss-cn-shanghai.aliyuncs.com
           EOF
           chmod 600 ~/.ossutilconfig
+          # Debug: confirm the heredoc actually wrote the secrets
+          # (and not the literal expression placeholder). The
+          # GH log already masks secret values on display, but
+          # verifying on disk catches the case where the
+          # heredoc failed to expand the secret expression.
+          echo "--- ~/.ossutilconfig (secrets masked by GitHub) ---"
+          sed -E 's/(accessKey(ID|Secret)=).*/\1REDACTED/' ~/.ossutilconfig
+          ls -la ~/.ossutilconfig
           # The deploy key only needs PutObject + GetObject on
           # ``fund-data-public-l``; that is the IAM policy that
           # produces the secret. Scope the smoke test to a
