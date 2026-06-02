@@ -52,9 +52,16 @@ jobs:
           #                              binary inside:  ossutil
           #   pre-v1.7.18 (legacy) -> ossutil64-<ver>-linux.zip
           #                              binary inside:  ossutil64
+          #
+          # Zip layout gotcha (v1.7.18+): the binary is wrapped
+          # in a top-level directory named after the asset, so
+          # plain `unzip -d /tmp/ossutil` lands it at
+          # /tmp/ossutil/ossutil-v1.7.18-linux-amd64/ossutil.
+          # Use `unzip -j` to flatten and drop the top dir.
           curl -sSL -o /tmp/ossutil.zip \
             https://github.com/aliyun/ossutil/releases/download/v1.7.18/ossutil-v1.7.18-linux-amd64.zip
           unzip -jq /tmp/ossutil.zip -d /tmp/ossutil
+          ls -la /tmp/ossutil
           sudo mv /tmp/ossutil/ossutil /usr/local/bin/ossutil
           rm -rf /tmp/ossutil /tmp/ossutil.zip
           ossutil --version

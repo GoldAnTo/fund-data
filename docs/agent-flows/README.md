@@ -18,7 +18,8 @@ lives here.
 |---|---|
 | `fund_search` / `fund_list` — keyword search and full universe | [`fund-lookup-pipeline.md`](./fund-lookup-pipeline.md) (diagrams + code anchors) |
 | Answering "how does fund search work?" | [`fund-search-playbook.md`](./fund-search-playbook.md) (standard answer + 12 FAQs + design philosophy) |
-| Fund-by-fund sync (`fund_sync` / `fund_batch_sync`) | _TBD — see [`fund-data/AGENTS.md` §Backfill](../fund-data/AGENTS.md) for the long-running recipe_ |
+| `fund_sync` / `fund_batch_sync` / `fund-backfill` — the long-running pipeline | [`fund-batch-sync-pipeline.md`](./fund-batch-sync-pipeline.md) (diagrams + code anchors) |
+| Answering "how does batch sync work?" | [`fund-batch-sync-playbook.md`](./fund-batch-sync-playbook.md) (standard answer + 14 FAQs + design philosophy) |
 
 ## How to read these diagrams
 
