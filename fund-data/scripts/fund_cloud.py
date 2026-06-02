@@ -685,13 +685,13 @@ def upload_to_oss(
     if not sha_path.is_file():
         raise FileNotFoundError(f"missing sha256 sidecar: {sha_path}")
 
-    # The release id is the directory name. build_bundle
     # Read the version from the manifest so the release directory name
-    # (e.g. "nightly-release") does not contaminate the OSS key. If no
-    # manifest is provided, fall back to the directory name.
+    # (e.g. "nightly-release") does not contaminate the OSS key. Older
+    # dry-run callers may pass a stub manifest, so fall back to the
+    # directory name when the manifest has no version.
     if manifest_path is not None:
         manifest_data = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-        version = str(manifest_data["version"])
+        version = str(manifest_data.get("version") or _safe_version(release_path.name))
     else:
         version = _safe_version(release_path.name)
     release_prefix = f"{prefix}/releases/{version}"
