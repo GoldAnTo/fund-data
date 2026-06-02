@@ -118,12 +118,15 @@ jobs:
         id: gate
         env:
           FUND_DATA_CACHE_DIR: /tmp/nightly-cache
+          PYTHONPATH: fund-data:$PYTHONPATH
         run: |
           set -o pipefail
           mkdir -p /tmp/nightly-release /tmp/nightly-artifacts
           # The gate resolves its DB via default_db_path(), which
           # honours FUND_DATA_CACHE_DIR (pointing at the pull
-          # above). No --db override needed.
+          # above). No --db override needed. PYTHONPATH=fund-data
+          # lets `import fund_data` resolve to fund-data/scripts/
+          # /fund_data.py from the repo root.
           python scripts/ci/nightly_health_check.py \
             --release-dir /tmp/nightly-release \
             --manifest-output /tmp/nightly-release/manifest.json \
