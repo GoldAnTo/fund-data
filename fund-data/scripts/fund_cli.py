@@ -273,6 +273,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip the live Eastmoney reachability probe (useful in CI).",
     )
     doctor.add_argument(
+        "--skip-sync-state",
+        action="store_true",
+        help=(
+            "Skip the sync_state checks (sync_failures / coverage / "
+            "backfill_stale). Useful when doctor runs against a "
+            "query-only DB that excludes the sync_* tables."
+        ),
+    )
+    doctor.add_argument(
         "--quiet",
         action="store_true",
         help="Compact JSON (no indent) and skip the human-readable FAIL banner.",
