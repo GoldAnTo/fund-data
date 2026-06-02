@@ -241,6 +241,27 @@ python3 scripts/fund_cli.py cloud build-bundle \
   --manifest-output ../dist/fund-data/current/manifest.json
 ```
 
+Upload the built release to OSS (the `~/.ossutilconfig` bucket
+defaults to `fund-data-public-l` in `cn-shanghai`; pass
+`--bucket` / `--region` / `--prefix` to override):
+
+```bash
+python3 scripts/fund_cli.py cloud upload \
+  --release-dir ../dist/fund-data/releases/$VERSION \
+  --manifest ../dist/fund-data/current/manifest.json \
+  --output ../dist/fund-data/current/upload.json
+# --dry-run previews the ossutil calls without touching the network
+# --bucket / --region / --prefix override the ~/.ossutilconfig defaults
+```
+
+The subcommand shells out to `ossutil cp -f local oss://...`
+(`-f` is required so it does not hang on existing keys in a
+non-interactive shell). Three artifacts land in the bucket:
+the gzipped query db, the sha256 sidecar, and -- when
+`--manifest` is passed -- the manifest at
+`{prefix}/current/manifest.json` so the next `cloud pull`
+sees the new version.
+
 Install a released bundle locally:
 
 ```bash
