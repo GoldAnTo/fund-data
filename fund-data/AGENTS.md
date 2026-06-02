@@ -50,3 +50,52 @@ When you want the full per-fund base row, run **two passes**:
 The Investoday slot (see `PROVIDERS.md`) is the long-term fix:
 apply for an API key, set `INVESTDATA_API_KEY`, and the
 `auto` chain will put Investoday first for every capability.
+
+## Gotchas worth remembering before the next backfill
+
+- **`funds.fund_type` is empty for 84% of the universe out of
+  `fetch_fund_list(provider='auto'|'akshare')`.** AkShare's
+  `ak.fund_name_em()` returns the `基金类型` column as a numeric
+  category code (``1111``/``1211``/...) or blank for most funds,
+  and `FundDataStore.upsert_funds` is a wholesale column
+  overwrite. Pull the real fund_type from the Eastmoney
+  `fundcode_search.js` index instead — the same row that backs
+  search, which has ``[code, pinyin, name, fund_type, pinyin_full]``
+  with the real category for every fund. The project ships
+  `scripts/refresh_fund_type.py` for this; it writes via direct
+  SQL so the populated `company` / `manager` / `fund_name`
+  columns are not clobbered. See commit `2ec363b`.
+
+- **Back-end share classes (``000002`` / ``000012`` / ``000108``
+  / ...) have a stub Eastmoney snapshot page.** The body is
+  effectively empty: `fS_code` / `fS_name` / every returns field
+  all blank. The previous `parse_snapshot` raised
+  `ValueError("fund code must contain 6 digits: ''")`, which
+  surfaced in `sync_failures` as a confusing 6-digit-regex
+  failure. Now `parse_snapshot` returns `None` (the provider
+  layer turns that into an empty dict so the provider chain
+  does not raise) and `sync_fund` skips the snapshot row
+  without aborting the whole sync. 241 funds were sitting in
+  `sync_failures` because of this; the test
+  `test_batch_sync_funds_does_not_record_back_end_share_as_failure`
+  is the regression guard. See commit `501977b`.
+
+- **`akshare_capability_backfill.py:216` previously called
+  `AkshareProvider.fee_structures(code, indicator=...)` with the
+  wrong kwarg name** (the method only accepts `indicators=[...]`).
+  Every fund tripped `TypeError` and the bulk runner reported
+  "fee_structures failed for 26936 funds" with zero rows. The
+  result was `fee_structures` stuck at ~700 funds for the whole
+  26,936-fund run. The fix lives in the bulk runner; if you ever
+  need to seed fees from scratch,
+  `scripts/fee_only_backfill.py` is the dedicated page-scrape
+  runner (eastmoney-only, ~0.27 s/fund, 14 min for the full
+  universe). See commit `2ec363b`.
+
+- **`akshare_capability_backfill.py --skip-existing` had the
+  inclusion direction inverted** (AND of NOT EXISTS instead of
+  OR). A fund that lost a single capability to a partial
+  backfill such as the fee TypeError above was skipped, so the
+  resumed run touched no rows for it. After the fix the worker
+  picks up exactly the funds missing at least one of the target
+  rows. See commit `df71a14`.
