@@ -360,6 +360,62 @@ def _normalize_date_text(value: Any) -> str:
     return text
 
 
+# Calendar day for the end of each Chinese reporting quarter.
+# AkShare emits ``"YYYY年N季度股票投资明细"`` from
+# ``fund_portfolio_hold_em`` and ``fund_portfolio_bond_hold_em``;
+# the long-form Chinese label collapses to one of these four
+# quarter-end ISO dates so a single JOIN / GROUP BY can cover
+# both the equity and the bond disclosure tables.
+_QUARTER_END_DAY = {1: 31, 2: 30, 3: 30, 4: 31}
+
+# Pre-compiled so the helper is cheap to call from the per-row
+# write path inside ``AkshareProvider.stock_holdings`` /
+# ``bond_holdings``.  Anchored with ``^`` so a row that already
+# happens to be ISO (``2024-12-31``) does not get re-mapped to a
+# different quarter end.
+_QUARTER_LABEL_RE = re.compile(r"^(\d{4})年([1-4])季度")
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_YEAR_ONLY_RE = re.compile(r"^\d{4}$")
+
+
+def _normalize_report_period(value: Any) -> str:
+    """Collapse a Chinese quarterly report label to its ISO quarter end.
+
+    Handles the four shapes that show up in the local data base
+    (and a fifth that the AkShare provider emits with a suffix
+    like ``股票投资明细`` / ``债券投资明细``):
+
+    ==============================  ==================
+    input                          output
+    ==============================  ==================
+    ``"2024年4季度股票投资明细"``  ``"2024-12-31"``
+    ``"2024年4季度债券投资明细"``  ``"2024-12-31"``
+    ``"2024年4季度"``              ``"2024-12-31"``
+    ``"2024-12-31"``               ``"2024-12-31"`` (idempotent)
+    ``"2024"``                     ``"2024-12-31"``
+    ==============================  ==================
+
+    Empty / ``None`` returns ``""``.  An unrecognised format is
+    returned as-is (defensive: do not break data we cannot
+    interpret -- the migration script in
+    :mod:`migrate_normalize_report_period` will surface the
+    unknown values so the operator can decide).
+    """
+    text = _clean_text(value)
+    if not text:
+        return ""
+    if _ISO_DATE_RE.match(text):
+        return text
+    m = _QUARTER_LABEL_RE.match(text)
+    if m:
+        year, quarter = int(m.group(1)), int(m.group(2))
+        end_month = quarter * 3
+        return f"{year}-{end_month:02d}-{_QUARTER_END_DAY[quarter]:02d}"
+    if _YEAR_ONLY_RE.match(text):
+        return f"{text}-12-31"
+    return text
+
+
 def _fee_indicator_alias(value: Any) -> str:
     text = _clean_text(value)
     aliases = {
@@ -899,7 +955,7 @@ class AkshareProvider:
                 continue
             rows.append(
                 {
-                    "report_period": str(item.get("季度") or year),
+                    "report_period": _normalize_report_period(item.get("季度") or year),
                     "stock_code": str(stock_code).zfill(6),
                     "stock_name": str(stock_name),
                     "net_value_ratio": _to_float(item.get("占净值比例"), percent=True),
@@ -970,7 +1026,7 @@ class AkshareProvider:
             )
             rows.append(
                 {
-                    "report_period": str(item.get("季度") or year),
+                    "report_period": _normalize_report_period(item.get("季度") or year),
                     "bond_code": str(bond_code),
                     "bond_name": str(bond_name),
                     "net_value_ratio": net_value_ratio,
