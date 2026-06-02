@@ -243,5 +243,89 @@ class CopyIntoTests(unittest.TestCase):
             self.assertNotIn("::warning::", buf.getvalue())
 
 
+class StatusTests(unittest.TestCase):
+    """Pin the install-skill `status` action so silent regressions
+    don't make the agent start trusting a stale local install.
+
+    The status line is what an agent (or a human) reads first
+    when something is "weird" with the skill — wrong version,
+    copy doesn't match repo, symlink broken, etc. We test the
+    four outcomes that matter: MISSING, STALE_COPY (version),
+    STALE_COPY (hash), INSTALLED.
+    """
+
+    def _write_skill(self, path: Path, *, version: str | None = None, body: str = "body") -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        front = "---\n"
+        if version is not None:
+            front += f"version: {version}\n"
+        front += "---\n"
+        (path / "SKILL.md").write_text(front + body + "\n", encoding="utf-8")
+
+    def test_status_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            missing = Path(tmpdir) / "codex"
+            self.assertIn("MISSING", install_skill._status_one("codex", missing))
+
+    def test_status_installed_reports_version(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            installed = Path(tmpdir) / "codex"
+            self._write_skill(installed, version="0.2.0")
+            with mock.patch.object(
+                install_skill, "SKILL_MARKER", installed / "SKILL.md"
+            ):
+                self._write_skill(installed, version="0.2.0")
+                line = install_skill._status_one("codex", installed)
+            self.assertIn("INSTALLED", line)
+            self.assertIn("v0.2.0", line)
+
+    def test_status_stale_copy_when_version_differs(self):
+        """Source repo is on 0.2.0, agent install is on 0.1.0 — flag it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            installed = Path(tmpdir) / "codex"
+            self._write_skill(installed, version="0.1.0")
+            source = Path(tmpdir) / "source"
+            self._write_skill(source, version="0.2.0")
+            with mock.patch.object(
+                install_skill, "SKILL_MARKER", source / "SKILL.md"
+            ):
+                line = install_skill._status_one("codex", installed)
+            self.assertIn("STALE_COPY", line)
+            self.assertIn("v0.1.0", line)
+            self.assertIn("v0.2.0", line)
+            self.assertIn("--copy", line)
+
+    def test_status_stale_copy_when_hash_differs(self):
+        """Versions match but content diverged (e.g. uncommitted edit
+        on either side) — still flag, but show the hash mismatch."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            installed = Path(tmpdir) / "codex"
+            source = Path(tmpdir) / "source"
+            self._write_skill(installed, version="0.2.0", body="installed body")
+            self._write_skill(source, version="0.2.0", body="source body (newer)")
+            with mock.patch.object(
+                install_skill, "SKILL_MARKER", source / "SKILL.md"
+            ):
+                line = install_skill._status_one("codex", installed)
+            self.assertIn("STALE_COPY", line)
+            self.assertIn("hash differs", line)
+
+    def test_read_skill_version_handles_missing_file(self):
+        self.assertIsNone(install_skill._read_skill_version(Path("/nonexistent/path/SKILL.md")))
+
+    def test_read_skill_version_strips_whitespace_and_skips_comments(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skill_md = Path(tmpdir) / "SKILL.md"
+            skill_md.write_text(
+                "# top-level comment\n"
+                "---\n"
+                "name: fund-data\n"
+                "version:   0.2.0  \n"
+                "---\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(install_skill._read_skill_version(skill_md), "0.2.0")
+
+
 if __name__ == "__main__":
     unittest.main()

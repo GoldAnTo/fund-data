@@ -15,6 +15,7 @@ instead (matches the manual workflow described in SKILL.md).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import sqlite3
@@ -217,8 +218,65 @@ def _status_one(target: str, dest: Path) -> str:
             return f"  [{target}] LINKED  — {dest} -> {target_path}"
         return f"  [{target}] STALE   — {dest} -> {target_path} (expected {SKILL_DIR_FOR_TARGETS})"
     if (dest / "SKILL.md").is_file():
-        return f"  [{target}] INSTALLED — {dest} (real directory)"
+        source_version = _read_skill_version(SKILL_MARKER)
+        installed_version = _read_skill_version(dest / "SKILL.md")
+        if source_version and installed_version and source_version != installed_version:
+            return (
+                f"  [{target}] STALE_COPY — installed v{installed_version}, "
+                f"source v{source_version}. "
+                f"Run `install_skill.py install --target {target} --copy` to refresh."
+            )
+        source_hash = _file_sha256(SKILL_MARKER)
+        installed_hash = _file_sha256(dest / "SKILL.md")
+        if source_hash != installed_hash:
+            return (
+                f"  [{target}] STALE_COPY — version matches "
+                f"({installed_version or '?'}) but SKILL.md content hash differs "
+                f"(installed {installed_hash}, source {source_hash}). "
+                f"Run `install_skill.py install --target {target} --copy` to refresh."
+            )
+        version_suffix = f" (v{installed_version})" if installed_version else ""
+        return f"  [{target}] INSTALLED — {dest}{version_suffix} (real directory)"
     return f"  [{target}] BROKEN  — {dest} exists but has no SKILL.md"
+
+
+def _read_skill_version(path: Path) -> str | None:
+    """Return the ``version: X.Y.Z`` frontmatter value of a SKILL.md, or None.
+
+    The SKILL.md frontmatter is fenced by ``---`` lines; we look for the
+    first non-comment line that starts with ``version:``. Whitespace is
+    stripped. Returns None on missing file, parse error, or no version key
+    (some third-party skills ship without one — those just won't be flagged
+    as STALE_COPY by version, only by hash).
+    """
+    if not path.is_file():
+        return None
+    try:
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if line.startswith("#"):
+                continue
+            if line.startswith("version:"):
+                value = line.split(":", 1)[1].strip()
+                return value or None
+    except OSError:
+        return None
+    return None
+
+
+def _file_sha256(path: Path) -> str:
+    """First 12 hex chars of SHA-256, so a status line stays one terminal row.
+
+    SKILL.md is the only file we hash for status — it's the agent's
+    contract with us. Hashing the full skill tree would make status
+    slow on large installs and produce false positives whenever a
+    runtime artifact (logs, raw_responses, etc.) is touched.
+    """
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()[:12]
 
 
 def _resolve_targets(name: str) -> Iterable[tuple[str, Path]]:
