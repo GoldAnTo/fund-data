@@ -104,6 +104,43 @@ class FundDataParserTests(unittest.TestCase):
         self.assertEqual(snapshot["stock_codes"], ["1.600519", "0.000333"])
         self.assertAlmostEqual(snapshot["returns"]["one_year"], -0.1703)
 
+    def test_parse_snapshot_returns_none_for_empty_page(self):
+        # Back-end share classes (000002, 000012, ...) hit a stub
+        # Eastmoney page that is essentially empty. parse_snapshot
+        # must return None so the caller can distinguish "no
+        # standalone snapshot" from a parse error -- the previous
+        # behaviour raised ``fund code must contain 6 digits: ''``
+        # and ended up in sync_failures with a confusing message.
+        self.assertIsNone(fund_data.parse_snapshot(""))
+        self.assertIsNone(fund_data.parse_snapshot("   \n  \t  "))
+
+    def test_parse_snapshot_falls_back_to_default_code(self):
+        # The JS body has the structure Eastmoney emits but the
+        # embedded fS_code token is blank (a real edge case when
+        # the server returns a partially populated response). The
+        # caller-supplied default_code is used so the snapshot row
+        # is still tied to the fund that the caller requested.
+        body = (
+            'var fS_name = "";var fS_code = "";var fund_sourceRate="";'
+            'var fund_Rate="";var fund_minsg="";var stockCodesNew =[];'
+            'var syl_1n="";var syl_6y="";var syl_3y="";var syl_1y="";'
+        )
+        snapshot = fund_data.parse_snapshot(body, default_code="000002")
+
+        self.assertEqual(snapshot["fund_code"], "000002")
+        self.assertEqual(snapshot["fund_name"], "")
+        self.assertIsNone(snapshot["source_rate"])
+        self.assertEqual(snapshot["stock_codes"], [])
+
+    def test_parse_snapshot_raises_when_no_code_available(self):
+        # No body content AND no default_code -- genuine parse
+        # failure. The caller did not give us a fallback and the
+        # page has nothing to extract, so the error must surface.
+        body = 'var fS_name = "";var fS_code = "";'
+        with self.assertRaises(ValueError) as ctx:
+            fund_data.parse_snapshot(body)
+        self.assertIn("fS_code", str(ctx.exception))
+
     def test_parse_fund_code_list_normalizes_full_market_rows(self):
         rows = fund_data.parse_fund_code_list(FUND_CODE_LIST_PAYLOAD)
 
@@ -581,6 +618,49 @@ class FundDataStoreTests(unittest.TestCase):
 
             self.assertEqual(journal_mode.lower(), "wal")
             self.assertGreaterEqual(busy_timeout, 30000)
+
+    def test_batch_sync_funds_does_not_record_back_end_share_as_failure(self):
+        # Regression guard: back-end share classes (000002, 000012,
+        # 000108, ...) hit a stub Eastmoney page and used to fail
+        # with ``fund code must contain 6 digits: ''`` inside
+        # parse_snapshot, ending up in sync_failures. After the
+        # parse_snapshot default_code fix, the empty page is
+        # recognised as "no snapshot available" and the sync
+        # succeeds (with zero snapshot rows for the back-end
+        # share).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            store = fund_data.FundDataStore(db_path)
+            for code in ("110022", "000002", "000012", "000108"):
+                store.upsert_funds([
+                    {
+                        "fund_code": code,
+                        "fund_name": code,
+                        "fund_type": "股票型",
+                        "company": "",
+                        "manager": "",
+                        "nav": None,
+                        "nav_date": "",
+                        "other_names": "",
+                        "source": "test",
+                    }
+                ])
+
+            result = fund_data.batch_sync_funds(
+                ["110022", "000002", "000012", "000108"],
+                db_path=db_path,
+                provider="eastmoney",
+            )
+
+            self.assertEqual(result["failed"], 0)
+            self.assertEqual(result["ok"], 4)
+            with closing(sqlite3.connect(db_path)) as con:
+                fails = list(
+                    con.execute(
+                        "SELECT fund_code, message FROM sync_failures"
+                    ).fetchall()
+                )
+            self.assertEqual(fails, [])
 
     def test_store_upserts_funds_nav_snapshot_and_raw_responses(self):
         with tempfile.TemporaryDirectory() as tmpdir:

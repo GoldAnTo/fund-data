@@ -440,15 +440,44 @@ def _extract_js_array(raw_text: str, name: str) -> list[str]:
         return []
 
 
-def parse_snapshot(raw_text: str) -> dict[str, Any]:
+def parse_snapshot(
+    raw_text: str, *, default_code: str = ""
+) -> dict[str, Any] | None:
+    """Parse the Eastmoney ``pingzhongdata/{code}.js`` payload.
+
+    Returns ``None`` when the page body is empty or the embedded
+    ``fS_code`` token is missing, so callers can distinguish a
+    legitimate "no standalone snapshot for this fund" (e.g. the
+    back-end share classes ``000002``, ``000012``, ... that share
+    their profile with the front-end class) from a parse error.
+    ``default_code`` is used as the ``fund_code`` fallback when the
+    page body is present but the embedded ``fS_code`` is blank,
+    matching what the caller already passed in via
+    :meth:`FundDataClient.snapshot`.
+
+    The parser was previously happy to feed an empty ``fS_code``
+    through :func:`normalize_fund_code`, which raises
+    ``ValueError("fund code must contain 6 digits: ''")`` and lands
+    the fund in ``sync_failures`` with a message that hides the
+    real cause (back-end share). 241 funds (``000002``/``000012``/
+    ``000108``/...) carry that spurious failure today.
+    """
+    if not raw_text or not raw_text.strip():
+        return None
     returns = {
         "one_year": _to_float(_extract_js_string(raw_text, "syl_1n"), percent=True),
         "six_month": _to_float(_extract_js_string(raw_text, "syl_6y"), percent=True),
         "three_month": _to_float(_extract_js_string(raw_text, "syl_3y"), percent=True),
         "one_month": _to_float(_extract_js_string(raw_text, "syl_1y"), percent=True),
     }
+    raw_fS_code = _extract_js_string(raw_text, "fS_code")
+    fallback = raw_fS_code or default_code
+    if not fallback:
+        # Page body present but no usable code -- this is the genuine
+        # parse-error path. Surface it instead of writing a half-row.
+        raise ValueError("could not extract fS_code from snapshot page")
     return {
-        "fund_code": normalize_fund_code(_extract_js_string(raw_text, "fS_code")),
+        "fund_code": normalize_fund_code(fallback),
         "fund_name": _extract_js_string(raw_text, "fS_name"),
         "source_rate": _to_float(_extract_js_string(raw_text, "fund_sourceRate")),
         "current_rate": _to_float(_extract_js_string(raw_text, "fund_Rate")),
@@ -600,7 +629,12 @@ class EastmoneyProvider:
         )
 
     def snapshot(self, code: str) -> dict[str, Any]:
-        return parse_snapshot(self.client.snapshot(code))
+        # parse_snapshot returns None when the Eastmoney page is empty
+        # (back-end share classes). Translate that to an empty dict
+        # so the provider chain does not raise "provider returned
+        # no rows" and we still surface the no-snapshot case to the
+        # caller as a falsy value.
+        return parse_snapshot(self.client.snapshot(code), default_code=code) or {}
 
     def stock_holdings(self, code: str, *, report_year: str | None = None) -> list[dict[str, Any]]:
         raise ProviderError(
@@ -2663,14 +2697,14 @@ def fetch_snapshot(
     persist: bool = True,
     raw_text: str | None = None,
     provider: str = PROVIDER_AUTO,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     if raw_text is not None:
         raw = raw_text
-        snapshot = parse_snapshot(raw)
+        snapshot = parse_snapshot(raw, default_code=code)
         source = "eastmoney.snapshot"
     elif client is not None:
         raw = client.snapshot(code)
-        snapshot = parse_snapshot(raw)
+        snapshot = parse_snapshot(raw, default_code=code)
         source = "eastmoney.snapshot"
     else:
         result = run_provider_chain(
@@ -2682,9 +2716,15 @@ def fetch_snapshot(
             {"provider": result.provider, "snapshot": snapshot, "failures": result.failures}
         )
     if persist:
-        store = FundDataStore(db_path)
-        store.upsert_snapshot(snapshot)
-        store.record_raw_response(source, normalize_fund_code(code), raw)
+        # Back-end share classes (000002, 000012, ...) yield an
+        # empty Eastmoney page; parse_snapshot returns None and the
+        # EastmoneyProvider layer converts that to an empty dict.
+        # Either signal means "no snapshot available" -- do not
+        # write a half-row to the data base.
+        if snapshot:
+            store = FundDataStore(db_path)
+            store.upsert_snapshot(snapshot)
+            store.record_raw_response(source, normalize_fund_code(code), raw)
     return snapshot
 
 
@@ -3037,7 +3077,10 @@ def sync_fund(
         snapshot = fetch_snapshot(
             code, db_path=db_path, client=client, persist=True, provider=provider
         )
-        snapshot_count = 1
+        # Back-end share classes have no standalone Eastmoney
+        # page; treat "no snapshot available" (None or empty dict)
+        # as a soft skip rather than aborting the whole sync.
+        snapshot_count = 1 if snapshot else 0
         rows_changed += snapshot_count
 
         profile_count = 0
