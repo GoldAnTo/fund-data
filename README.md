@@ -165,18 +165,20 @@ ossutil cp dist/fund-data/current/manifest.json \
   oss://YOUR_BUCKET/fund-data/current/manifest.json
 ```
 
-Install or refresh the local cache from OSS:
+Install or refresh the local cache from the project OSS bucket:
 
 ```bash
-python3 fund-data/scripts/fund_cli.py cloud pull \
-  --manifest-url https://YOUR_BUCKET.oss-cn-hangzhou.aliyuncs.com/fund-data/current/manifest.json
+python3 fund-data/scripts/fund_cli.py cloud pull
 python3 fund-data/scripts/fund_cli.py cloud status
 ```
 
-After `cloud pull`, `fund_data` and `fund-mcp` automatically prefer the
-cached query database when `FUND_DATA_DB` is not set. Use
-`FUND_DATA_CACHE_DIR` to move the cache, or `FUND_DATA_DB` to override
-the database path explicitly.
+OpenClaw, MCP, and CLI data commands automatically try the project OSS
+manifest first (`FUND_DATA_MANIFEST_URL` overrides it). If the query
+bundle is available, it is cached under `~/.cache/fund-data/` and used
+before live providers. If OSS is unavailable, commands fall back to the
+normal provider/API chain. Use `FUND_DATA_CACHE_DIR` to move the cache,
+`FUND_DATA_DB` to force a specific SQLite file, or
+`FUND_DATA_AUTO_PULL=0` to skip the OSS bootstrap.
 
 Full database archives should be private. They keep `raw_responses`,
 sync logs, and failure queues for audit/rebuild use, so do not publish

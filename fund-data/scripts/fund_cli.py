@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -65,6 +64,20 @@ def _setup_logging(quiet: bool, level_name: str) -> None:
         stream=sys.stderr,
         force=True,
     )
+
+
+def _maybe_bootstrap_cloud(args: argparse.Namespace) -> None:
+    """Prefer the project OSS bundle for agent-facing data commands."""
+    if args.command == "cloud":
+        return
+    if getattr(args, "db", None):
+        return
+    result = fund_cloud.ensure_project_bundle()
+    if result.get("fallback") == "api" and result.get("error"):
+        logging.getLogger("fund_data").warning(
+            "cloud bundle unavailable; falling back to provider APIs: %s",
+            result["error"],
+        )
 
 
 def _add_common_db_arg(parser: argparse.ArgumentParser) -> None:
@@ -388,8 +401,11 @@ def build_parser() -> argparse.ArgumentParser:
     pull = cloud_subparsers.add_parser("pull", help="Download and install a cloud query bundle")
     pull.add_argument(
         "--manifest-url",
-        default=os.environ.get("FUND_DATA_MANIFEST_URL"),
-        help="HTTPS/file URL for manifest.json. Defaults to FUND_DATA_MANIFEST_URL.",
+        default=fund_cloud.default_manifest_url(),
+        help=(
+            "HTTPS/file URL for manifest.json. Defaults to "
+            "FUND_DATA_MANIFEST_URL or the project OSS manifest."
+        ),
     )
     pull.add_argument("--cache-dir", help="Local cache directory. Defaults to ~/.cache/fund-data.")
     pull.add_argument(
@@ -459,6 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     _setup_logging(args.quiet, args.log_level)
+    _maybe_bootstrap_cloud(args)
 
     try:
         if args.command == "list":
@@ -736,8 +753,6 @@ def main(argv: list[str] | None = None) -> int:
                     _print_json(payload)
                 return 0
             if args.cloud_command == "pull":
-                if not args.manifest_url:
-                    raise ValueError("--manifest-url or FUND_DATA_MANIFEST_URL is required")
                 payload = fund_cloud.pull_bundle(
                     args.manifest_url,
                     cache_dir=args.cache_dir,

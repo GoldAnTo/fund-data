@@ -76,7 +76,9 @@ class FundMcpProtocolTests(unittest.TestCase):
 
     def test_call_fund_cloud_status_returns_cache_status(self):
         status = {"installed": False, "cache_dir": "/tmp/fund-data-cache"}
-        with patch.object(fund_mcp.fund_cloud, "status", return_value=status) as mock_status:
+        with patch.object(fund_mcp.fund_cloud, "status", return_value=status) as mock_status, patch.object(
+            fund_mcp.fund_cloud, "ensure_project_bundle"
+        ) as mock_bootstrap:
             response = fund_mcp.handle_message(
                 {
                     "jsonrpc": "2.0",
@@ -90,9 +92,31 @@ class FundMcpProtocolTests(unittest.TestCase):
             )
 
         mock_status.assert_called_once_with(cache_dir="/tmp/fund-data-cache", manifest_url=None)
+        mock_bootstrap.assert_not_called()
         result = response["result"]
         self.assertFalse(result["isError"])
         self.assertEqual(result["structuredContent"], status)
+
+    def test_call_fund_search_bootstraps_project_cloud_before_provider_api(self):
+        rows = [{"fund_code": "006600", "fund_name": "人保沪深300A"}]
+        with patch.object(fund_mcp.fund_cloud, "ensure_project_bundle") as mock_bootstrap, patch.object(
+            fund_mcp.fund_data, "search_funds", return_value=rows
+        ) as mock_search:
+            response = fund_mcp.handle_message(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 6,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "fund_search",
+                        "arguments": {"keyword": "沪深300"},
+                    },
+                }
+            )
+
+        mock_bootstrap.assert_called_once_with()
+        mock_search.assert_called_once_with("沪深300", db_path=None, provider="auto")
+        self.assertFalse(response["result"]["isError"])
 
     def test_stdio_entrypoint_reads_newline_delimited_json_rpc(self):
         message = {

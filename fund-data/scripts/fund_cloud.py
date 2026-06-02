@@ -497,6 +497,8 @@ OSSUTIL_BIN = "ossutil"
 DEFAULT_BUCKET = "fund-data-public-l"
 DEFAULT_PREFIX = "fund-data"
 DEFAULT_REGION = "cn-shanghai"
+MANIFEST_URL_ENV = "FUND_DATA_MANIFEST_URL"
+AUTO_PULL_ENV = "FUND_DATA_AUTO_PULL"
 
 
 @dataclass
@@ -527,6 +529,82 @@ class UploadResult:
             "uploaded": list(self.uploaded),
             "dry_run": self.dry_run,
         }
+
+
+def default_manifest_url() -> str:
+    """Return the project-configured public OSS manifest URL."""
+    configured = os.environ.get(MANIFEST_URL_ENV)
+    if configured:
+        return configured
+    base_url = f"https://{DEFAULT_BUCKET}.oss-{DEFAULT_REGION}.aliyuncs.com"
+    return f"{base_url}/{DEFAULT_PREFIX}/current/manifest.json"
+
+
+def ensure_project_bundle(
+    *,
+    cache_dir: str | Path | None = None,
+    manifest_url: str | None = None,
+) -> dict[str, Any]:
+    """Install the project OSS query bundle when no local DB is pinned.
+
+    Agent entry points call this before provider/API work. A successful
+    pull makes ``fund_data.default_db_path()`` resolve to the OSS-backed
+    query database. A failed pull returns a structured API fallback
+    signal instead of raising, so live providers can still run.
+    """
+    cache_path = Path(cache_dir) if cache_dir is not None else default_cache_dir()
+    if os.environ.get("FUND_DATA_DB"):
+        return {
+            "installed": False,
+            "cache_dir": str(cache_path),
+            "db_path": None,
+            "version": None,
+            "manifest_url": manifest_url or default_manifest_url(),
+            "source": None,
+            "fallback": None,
+            "skipped": "FUND_DATA_DB is set",
+        }
+    if os.environ.get(AUTO_PULL_ENV, "1").strip().lower() in {"0", "false", "no", "off"}:
+        return {
+            "installed": False,
+            "cache_dir": str(cache_path),
+            "db_path": None,
+            "version": None,
+            "manifest_url": manifest_url or default_manifest_url(),
+            "source": None,
+            "fallback": "api",
+            "skipped": f"{AUTO_PULL_ENV} is disabled",
+        }
+
+    existing = current_db_path(cache_path)
+    if existing:
+        result = status(cache_dir=cache_path)
+        result.update(
+            {
+                "manifest_url": result.get("manifest_url") or manifest_url or default_manifest_url(),
+                "source": "cache",
+                "fallback": None,
+                "skipped": "cloud cache already installed",
+            }
+        )
+        return result
+
+    url = manifest_url or default_manifest_url()
+    try:
+        result = pull_bundle(url, cache_dir=cache_path)
+    except Exception as exc:  # noqa: BLE001 - bootstrap failure should fall back to providers
+        return {
+            "installed": False,
+            "cache_dir": str(cache_path),
+            "db_path": None,
+            "version": None,
+            "manifest_url": url,
+            "source": None,
+            "fallback": "api",
+            "error": str(exc),
+        }
+    result.update({"source": "oss", "fallback": None, "skipped": None})
+    return result
 
 
 def _ossutil_upload(local: Path, remote: str, *, dry_run: bool = False) -> None:

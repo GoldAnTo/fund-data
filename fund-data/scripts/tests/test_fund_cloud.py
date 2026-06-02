@@ -17,6 +17,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import fund_cloud  # noqa: E402
 
 import fund_data  # noqa: E402
+import fund_cli  # noqa: E402
 
 
 class FundCloudBundleTests(unittest.TestCase):
@@ -195,6 +196,56 @@ class FundCloudBundleTests(unittest.TestCase):
             self.assertEqual(result["cache_dir"], str(cache_dir))
             self.assertFalse(cache_dir.exists())
 
+    def test_default_manifest_url_uses_project_oss_configuration(self):
+        self.assertEqual(
+            fund_cloud.default_manifest_url(),
+            "https://fund-data-public-l.oss-cn-shanghai.aliyuncs.com/fund-data/current/manifest.json",
+        )
+
+    def test_ensure_project_bundle_pulls_default_oss_when_no_cache_or_db_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / "cache"
+            payload = {
+                "installed": True,
+                "cache_dir": str(cache_dir),
+                "db_path": str(cache_dir / "releases" / "v1" / fund_cloud.QUERY_DB_NAME),
+                "version": "v1",
+            }
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+                fund_cloud, "pull_bundle", return_value=payload
+            ) as mock_pull:
+                result = fund_cloud.ensure_project_bundle(cache_dir=cache_dir)
+
+        mock_pull.assert_called_once_with(
+            fund_cloud.default_manifest_url(),
+            cache_dir=cache_dir,
+        )
+        self.assertTrue(result["installed"])
+        self.assertEqual(result["source"], "oss")
+        self.assertEqual(result["fallback"], None)
+
+    def test_ensure_project_bundle_skips_when_explicit_db_is_configured(self):
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.dict(
+            os.environ, {"FUND_DATA_DB": "/tmp/explicit.sqlite"}, clear=True
+        ), mock.patch.object(fund_cloud, "pull_bundle") as mock_pull:
+            result = fund_cloud.ensure_project_bundle(cache_dir=Path(tmpdir) / "cache")
+
+        mock_pull.assert_not_called()
+        self.assertFalse(result["installed"])
+        self.assertEqual(result["skipped"], "FUND_DATA_DB is set")
+
+    def test_ensure_project_bundle_returns_api_fallback_when_oss_pull_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.dict(
+            os.environ, {}, clear=True
+        ), mock.patch.object(
+            fund_cloud, "pull_bundle", side_effect=OSError("network unavailable")
+        ):
+            result = fund_cloud.ensure_project_bundle(cache_dir=Path(tmpdir) / "cache")
+
+        self.assertFalse(result["installed"])
+        self.assertEqual(result["fallback"], "api")
+        self.assertIn("network unavailable", result["error"])
+
 
 class CloudCliSubcommandTests(unittest.TestCase):
     """``fund_cli.py cloud <cmd>`` is the agent's stable
@@ -262,26 +313,21 @@ class CloudCliSubcommandTests(unittest.TestCase):
             self.assertIn("installed", payload)
             self.assertFalse(payload["installed"])
 
-    def test_pull_without_manifest_url_exits_nonzero_with_stderr_message(self):
-        # No manifest URL anywhere -> the agent gets a clear
-        # signal on stderr and a non-zero exit code. We do not
-        # want the agent to silently re-call with a guessed URL
-        # and download the wrong bundle.
-        env = os.environ.copy()
-        env.pop("FUND_DATA_MANIFEST_URL", None)
-        result = subprocess.run(
-            [sys.executable, str(SCRIPT_DIR / "fund_cli.py"), "cloud", "pull"],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-        )
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("manifest-url", result.stderr)
-        # stdout must be empty so the agent does not see a
-        # truncated JSON envelope.
-        self.assertEqual(result.stdout, "")
+    def test_pull_without_manifest_url_uses_project_default_manifest(self):
+        payload = {
+            "installed": True,
+            "cache_dir": "/tmp/fund-data-cache",
+            "db_path": "/tmp/fund-data-cache/query.sqlite",
+            "version": "v1",
+        }
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            fund_cli.fund_cloud, "pull_bundle", return_value=payload
+        ) as mock_pull, mock.patch("sys.stdout", new=io.StringIO()) as stdout:
+            exit_code = fund_cli.main(["cloud", "pull"])
+
+        self.assertEqual(exit_code, 0)
+        mock_pull.assert_called_once_with(fund_cloud.default_manifest_url(), cache_dir=None)
+        self.assertEqual(json.loads(stdout.getvalue()), payload)
 
     def test_build_bundle_end_to_end_with_output_file(self):
         # Confirm the --output flag round-trips through the CLI

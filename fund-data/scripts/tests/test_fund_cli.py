@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from contextlib import closing, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 TEST_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TEST_DIR))
@@ -167,6 +168,20 @@ class FundCliTests(unittest.TestCase):
         parsed = fund_cli.build_parser().parse_args(["search", "沪深300", "--provider", "tushare"])
 
         self.assertEqual(parsed.provider, "tushare")
+
+    def test_cli_bootstraps_cloud_for_default_data_commands(self):
+        args = fund_cli.build_parser().parse_args(["search", "沪深300"])
+        with mock.patch.object(fund_cli.fund_cloud, "ensure_project_bundle") as mock_bootstrap:
+            fund_cli._maybe_bootstrap_cloud(args)
+
+        mock_bootstrap.assert_called_once_with()
+
+    def test_cli_does_not_bootstrap_cloud_when_db_is_explicit(self):
+        args = fund_cli.build_parser().parse_args(["search", "沪深300", "--db", "/tmp/x.sqlite"])
+        with mock.patch.object(fund_cli.fund_cloud, "ensure_project_bundle") as mock_bootstrap:
+            fund_cli._maybe_bootstrap_cloud(args)
+
+        mock_bootstrap.assert_not_called()
 
     def test_cloud_status_command_returns_json(self):
         with tempfile.TemporaryDirectory() as tmpdir:

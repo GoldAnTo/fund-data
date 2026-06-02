@@ -262,19 +262,22 @@ the gzipped query db, the sha256 sidecar, and -- when
 `{prefix}/current/manifest.json` so the next `cloud pull`
 sees the new version.
 
-Install a released bundle locally:
+Install a released bundle locally from the project OSS bucket:
 
 ```bash
-python3 scripts/fund_cli.py cloud pull \
-  --manifest-url https://YOUR_BUCKET.oss-cn-hangzhou.aliyuncs.com/fund-data/current/manifest.json
+python3 scripts/fund_cli.py cloud pull
 python3 scripts/fund_cli.py cloud status
 ```
 
-When `FUND_DATA_DB` is unset, `scripts/fund_data.py` automatically
-prefers the pulled cache database under `~/.cache/fund-data/`.
-Set `FUND_DATA_CACHE_DIR` to move that cache, or `FUND_DATA_DB` to force
-a specific SQLite file. MCP clients can call `fund_cloud_status` before
-querying to check installed and remote versions.
+When `FUND_DATA_DB` is unset, CLI and MCP data tools automatically try
+the project OSS manifest first (`FUND_DATA_MANIFEST_URL` overrides it).
+If the bundle is reachable, it is pulled into `~/.cache/fund-data/` and
+used before live providers. If OSS is unavailable, the tools fall back
+to the normal provider/API chain. Set `FUND_DATA_CACHE_DIR` to move the
+cache, `FUND_DATA_DB` to force a specific SQLite file, or
+`FUND_DATA_AUTO_PULL=0` to skip this OSS bootstrap. MCP clients can call
+`fund_cloud_status` before querying to check installed and remote
+versions.
 
 For private full-database backup, archive the complete SQLite separately:
 

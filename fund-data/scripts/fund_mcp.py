@@ -377,6 +377,12 @@ def _provider(arguments: dict[str, Any]) -> str:
     return _optional_str(arguments, "provider") or fund_data.PROVIDER_AUTO
 
 
+def _maybe_bootstrap_cloud(arguments: dict[str, Any]) -> None:
+    if _optional_str(arguments, "db"):
+        return
+    fund_cloud.ensure_project_bundle()
+
+
 def _limit(rows: list[dict[str, Any]], arguments: dict[str, Any]) -> list[dict[str, Any]]:
     limit = _optional_int(arguments, "limit")
     return rows[:limit] if limit else rows
@@ -617,7 +623,10 @@ def handle_message(message: dict[str, Any]) -> dict[str, Any] | None:
         if handler is None:
             return _json_error(request_id, JSONRPC_METHOD_NOT_FOUND, f"unknown tool: {tool_name}")
         try:
-            payload = handler(_args(params))
+            arguments = _args(params)
+            if tool_name != "fund_cloud_status":
+                _maybe_bootstrap_cloud(arguments)
+            payload = handler(arguments)
         except (TypeError, ValueError) as exc:
             return _json_error(request_id, JSONRPC_INVALID_PARAMS, str(exc))
         except Exception as exc:  # noqa: BLE001 - tool errors should reach clients as tool results
