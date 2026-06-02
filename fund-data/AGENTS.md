@@ -99,3 +99,48 @@ apply for an API key, set `INVESTDATA_API_KEY`, and the
   resumed run touched no rows for it. After the fix the worker
   picks up exactly the funds missing at least one of the target
   rows. See commit `df71a14`.
+
+## Long-running pitfalls worth pre-flighting before kicking one off
+
+- **`fund_data.default_db_path()` and `doctor.py` resolve to
+  different databases by default.** `default_db_path()` walks
+  ``FUND_DATA_CACHE_DIR`` -> ``FUND_DATA_DB`` ->
+  ``fund_cloud.current_db_path()`` (the ``~/.cache/fund-data/
+  current.json`` pointer) -> the on-disk ``fund-data/data/
+  fund_data.sqlite`` fallback. ``doctor.py`` only knows about
+  that last fallback. So after a successful ``cloud pull`` the
+  CLI / MCP / batch-sync writes land in the cloud cache
+  query db while ``doctor`` reports the on-disk production db
+  numbers. Pick one explicitly: either ``export
+  FUND_DATA_DB=/path/to/fund_data.sqlite`` before the run, or
+  ``rm ~/.cache/fund-data/current.json`` to force the fallback.
+  Always check ``~/.cache/fund-data/current.json`` before a
+  long-running pull so the on-call human does not later wonder
+  why a 19k-row increment is in the cache but not the on-disk
+  db.
+
+- **macOS Python `urllib` will silently route through three
+  layers of proxy** (env vars, ``scutil --proxy``, and a
+  third-party app on 7897/1080). The CLI has no proxy bypass
+  knob, and ``env -u http_proxy -u https_proxy`` only clears
+  layer 1 -- the macOS system proxy and the third-party
+  app's launchd injection are still in play. To run a
+  long-running pull **without** a proxy, inject at the
+  Python layer: ``urllib.request.getproxies = lambda: {}``
+  before importing the rest of the project. Do not patch
+  ``_scproxy.get_proxy_settings`` -- that is a C extension
+  attribute, and the underlying ``SCDynamicStoreCopyProxies``
+  call ignores Python-level attribute replacement.
+
+- **macOS happy-eyeballs + urllib can deadlock on an
+  IPv4-only server.** Eastmoney only returns A records (no
+  AAAA), but macOS ``getaddrinfo`` (RFC 6724) prefers IPv6
+  and queues the IPv4 SYN behind the IPv6 one. The IPv6 SYN
+  never completes, the IPv4 SYN never gets sent, and the
+  process looks like it is hung at 0% CPU. ``dig +short
+  <host>`` before any long-running pull: if the result has
+  no AAAA, monkey-patch ``socket.getaddrinfo`` to drop the
+  IPv6 candidates before importing the project. The patch is
+  the same shape as the proxy one -- Python-level
+  ``socket.getaddrinfo`` filter, not a system-level change.
+
