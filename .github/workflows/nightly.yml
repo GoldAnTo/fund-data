@@ -92,13 +92,39 @@ jobs:
           # single ls so a misconfigured key fails fast.
           ossutil ls oss://fund-data-public-l/
 
+      - name: pull-query-db
+        # Pre-flight: CI runner starts with no local DB (the
+        # 5.4GB fund_data.sqlite is gitignored). Pull the
+        # query-only db from the project OSS bucket so the
+        # downstream doctor / build-bundle / upload steps have
+        # something to operate on. Pin the cache dir to
+        # /tmp/nightly-cache so the gate step can resolve it
+        # via FUND_DATA_CACHE_DIR.
+        env:
+          FUND_DATA_CACHE_DIR: /tmp/nightly-cache
+        run: |
+          mkdir -p "$FUND_DATA_CACHE_DIR"
+          python fund-data/scripts/fund_cli.py cloud pull \
+            --cache-dir "$FUND_DATA_CACHE_DIR" \
+            --output /tmp/nightly-artifacts/cloud-pull-init.json
+          # Debug: confirm the pull landed a db and the
+          # current.json pointer was updated.
+          echo "--- $FUND_DATA_CACHE_DIR ---"
+          ls -la "$FUND_DATA_CACHE_DIR"
+          echo "--- current.json ---"
+          cat "$FUND_DATA_CACHE_DIR/current.json" 2>/dev/null || echo "(no current.json)"
+
       - name: run-nightly-gate
         id: gate
+        env:
+          FUND_DATA_CACHE_DIR: /tmp/nightly-cache
         run: |
           set -o pipefail
           mkdir -p /tmp/nightly-release /tmp/nightly-artifacts
+          # The gate resolves its DB via default_db_path(), which
+          # honours FUND_DATA_CACHE_DIR (pointing at the pull
+          # above). No --db override needed.
           python scripts/ci/nightly_health_check.py \
-            --db fund-data/data/fund_data.sqlite \
             --release-dir /tmp/nightly-release \
             --manifest-output /tmp/nightly-release/manifest.json \
             --output /tmp/nightly-artifacts/summary.json \
