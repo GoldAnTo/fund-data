@@ -64,7 +64,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-FUND_CLI = SCRIPT_DIR.parent / "fund_cli.py"
+FUND_CLI = SCRIPT_DIR.parent.parent / "fund-data" / "scripts" / "fund_cli.py"
 
 
 @dataclasses.dataclass
