@@ -1,5 +1,9 @@
 # Fund Data 数据底座清单
 
+> 当前、可复查的覆盖口径见
+> [`docs/data-coverage-summary.md`](data-coverage-summary.md)。本文件保留
+> 长篇 inventory / 运维背景，部分数字可能反映早期 backfill 快照。
+
 > **最近更新:** 2026-06-02 15:55 (Asia/Shanghai)
 > **数据快照:** 本地 SQLite v=`2026-06-01T21:27:41Z` (backfill 末次)
 > **OSS 快照:** `oss://fund-data-public-l/fund-data/releases/2026-06-02-053226/`

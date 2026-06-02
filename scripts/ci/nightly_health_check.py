@@ -242,7 +242,11 @@ def run_gate(
                 str(db),
                 "--output",
                 "/tmp/nightly-doctor.json",
-                *(["--skip-network"] if skip_network else []),
+                "--skip-network",
+                # Query DBs (the OSS bundle) exclude the sync_*
+                # tables; the gate is verifying the data plane,
+                # not the operator's local sync state.
+                "--skip-sync-state",
             ],
         ),
         (
@@ -303,6 +307,16 @@ def run_gate(
             ],
         ),
     ]
+
+    # Upload and pull are back-to-back. The OSS bucket needs a
+    # few seconds to propagate the new manifest object before
+    # the pull request lands -- without this pause the pull step
+    # returns 404 even though the upload itself succeeded.
+    # This is a wait, not a step, so it lives outside the steps
+    # list. The timeout below is generous: most manifest
+    # propagations complete in <2s; 15s is plenty of headroom.
+    if "pull-and-verify" in {n for n, _ in steps}:
+        time.sleep(15)
 
     started = _utc_now()
     step_results = _retry_with_backoff(steps)

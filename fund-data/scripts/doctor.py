@@ -56,7 +56,13 @@ DEFAULT_VENV = SCRIPT_DIR.parent.parent / ".venv-akshare"
 DEFAULT_BACKFILL_STATE = SCRIPT_DIR.parent / "data" / "backfill_state.json"
 DEFAULT_STALE_HOURS = 24.0
 
-REQUIRED_TABLES = (
+# Tables that must exist for doctor to consider the database
+# usable. The query-only cloud bundle excludes the operator-side
+# audit tables (raw_responses / sync_runs / sync_failures) by
+# design, so those live in a separate set and are reported as
+# `missing` rather than as a hard fail. This mirrors the
+# EXCLUDED_TABLES list in fund_cloud.py.
+CORE_TABLES = (
     "funds",
     "nav_history",
     "snapshots",
@@ -68,6 +74,8 @@ REQUIRED_TABLES = (
     "dividends",
     "splits",
     "fund_managers",
+)
+EXCLUDABLE_TABLES = (
     "raw_responses",
     "sync_runs",
     "sync_failures",
@@ -89,10 +97,24 @@ def _check_db(db_path: Path) -> dict[str, object]:
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             }
-            missing = [t for t in REQUIRED_TABLES if t not in existing]
+            missing = [t for t in CORE_TABLES if t not in existing]
+            audit_missing = [t for t in EXCLUDABLE_TABLES if t not in existing]
         if missing:
-            return {"ok": False, "message": f"missing tables: {missing}"}
-        return {"ok": True, "path": str(db_path)}
+            return {
+                "ok": False,
+                "message": f"missing core tables: {missing}",
+                "missing_tables": missing,
+                "audit_tables_missing": audit_missing,
+            }
+        return {
+            "ok": True,
+            "path": str(db_path),
+            "missing_tables": [],
+            # audit tables missing == query-only bundle, not
+            # corruption. Reported separately so the agent / CI
+            # can tell the two cases apart.
+            "audit_tables_missing": audit_missing,
+        }
     except sqlite3.Error as exc:
         return {"ok": False, "message": f"sqlite error: {exc}"}
 
@@ -202,6 +224,17 @@ def _check_sync_failures(db_path: Path) -> dict[str, object]:
     if not db_path.is_file():
         return {"ok": True, "count": 0, "skipped": "db missing"}
     with sqlite3.connect(db_path) as conn:
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "sync_failures" not in tables:
+            # Query-only DBs (the cloud bundle) exclude
+            # sync_failures / sync_runs by design. Treat their
+            # absence as ok rather than throwing "no such table".
+            return {"ok": True, "count": 0, "skipped": "no sync_failures table"}
         row = conn.execute("SELECT COUNT(*) FROM sync_failures").fetchone()
     count = int(row[0]) if row else 0
     return {
@@ -425,6 +458,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Skip the live Eastmoney reachability probe (useful in CI).",
     )
     parser.add_argument(
+        "--skip-sync-state",
+        action="store_true",
+        help=(
+            "Skip the sync_state checks (sync_failures / coverage / "
+            "backfill_stale). Useful when doctor is running against "
+            "a query-only DB that excludes the sync_* tables, or "
+            "in CI where the local backfill state is not the gate's "
+            "concern."
+        ),
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="Emit compact JSON (no indent) and skip the human-readable "
@@ -465,9 +509,10 @@ def main(argv: list[str] | None = None) -> int:
     }
     if not args.skip_network:
         checks["eastmoney_reachable"] = _check_eastmoney()
-    checks["sync_failures"] = _check_sync_failures(db_path)
-    checks["coverage"] = _check_coverage(db_path)
-    checks["backfill_stale"] = _check_backfill_stale(DEFAULT_BACKFILL_STATE, db_path)
+    if not args.skip_sync_state:
+        checks["sync_failures"] = _check_sync_failures(db_path)
+        checks["coverage"] = _check_coverage(db_path)
+        checks["backfill_stale"] = _check_backfill_stale(DEFAULT_BACKFILL_STATE, db_path)
     checks["default_db"] = _check_default_db()
     if args.skip_network:
         # fund_cloud.status() with manifest_url=None skips the

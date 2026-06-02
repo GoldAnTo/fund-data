@@ -19,6 +19,7 @@ data without re-deriving the parsing logic every time.
 > Implementation plan: [`docs/superpowers/plans/2026-06-01-fund-data-skill.md`](docs/superpowers/plans/2026-06-01-fund-data-skill.md).
 > Architecture reference: [`fund-data/ARCHITECTURE.md`](fund-data/ARCHITECTURE.md).
 > Provider onboarding: [`fund-data/PROVIDERS.md`](fund-data/PROVIDERS.md).
+> Current data coverage: [`docs/data-coverage-summary.md`](docs/data-coverage-summary.md).
 
 ## Status (v0.2.0)
 
