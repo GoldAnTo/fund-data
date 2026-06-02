@@ -332,8 +332,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--db",
-        default=str(SCRIPT_DIR.parent / "data" / "fund_data.sqlite"),
-        help="Local SQLite to gate on. Defaults to fund-data/data/fund_data.sqlite.",
+        default=None,
+        help=(
+            "Local SQLite to gate on. Defaults to "
+            "fund_data.default_db_path() at call time, which "
+            "honours $FUND_DATA_CACHE_DIR / $FUND_DATA_DB. The "
+            "CI pre-flight runs `fund_cli cloud pull` into "
+            "$FUND_DATA_CACHE_DIR first, so a fresh runner "
+            "without a 5.4GB fund-data/data/fund_data.sqlite "
+            "still resolves to a real DB."
+        ),
     )
     parser.add_argument(
         "--release-dir",
@@ -367,6 +375,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Write the summary envelope to this file in addition to stdout.",
     )
     args = parser.parse_args(argv)
+
+    # Resolve the DB lazily: if --db is not given, defer to
+    # fund_data.default_db_path() so the FUND_DATA_CACHE_DIR /
+    # FUND_DATA_DB env vars (set by the CI pre-flight step)
+    # actually steer the path. Doing this at parse-time would
+    # require importing fund_data earlier, which pulls in
+    # optional runtime deps.
+    if args.db is None:
+        import fund_data
+        args.db = str(fund_data.default_db_path())
 
     summary = run_gate(
         db=args.db,
