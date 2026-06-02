@@ -706,6 +706,19 @@ def upload_to_oss(
             }
         )
 
+    # Verify the release file is accessible on OSS before updating the
+    # manifest pointer. Prevents a cascading 404 if the upload silently
+    # fails (ossutil returns 0 even on partial writes to some backends).
+    if not dry_run:
+        import urllib.request as _ur, urllib.error as _ue
+        file_url = f"{base_url}/{archive_remote.removeprefix(f'oss://{bucket}/')}"
+        try:
+            resp = _ur.urlopen(file_url, timeout=15)
+            if resp.status != 200:
+                raise RuntimeError(f"OSS verification failed for {file_url}: HTTP {resp.status}")
+        except _ue.HTTPError as exc:
+            raise RuntimeError(f"OSS verification failed for {file_url}: HTTP {exc.code}")
+
     manifest_url = ""
     if manifest_path is not None:
         manifest_remote = f"oss://{bucket}/{prefix}/current/manifest.json"
