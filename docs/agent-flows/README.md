@@ -26,6 +26,7 @@ FAQs + design philosophy; the answer script).
 | `fund-data` MCP server — JSON-RPC 2.0 over stdio (17 tools) | [`fund-mcp-server-pipeline.md`](./fund-mcp-server-pipeline.md) | [`fund-mcp-server-playbook.md`](./fund-mcp-server-playbook.md) |
 | `fund-cli cloud {build-bundle, pull, status, upload, archive-full}` — the OSS distribution path | [`fund-cloud-bundle-pipeline.md`](./fund-cloud-bundle-pipeline.md) | [`fund-cloud-bundle-playbook.md`](./fund-cloud-bundle-playbook.md) |
 | `fund_coverage` / `fund_coverage_report` — the read-only introspection layer | [`fund-coverage-pipeline.md`](./fund-coverage-pipeline.md) | [`fund-coverage-playbook.md`](./fund-coverage-playbook.md) |
+| `install_skill.py {install, uninstall, status}` — landing the skill in OpenClaw / Codex / Claude | [`fund-install-pipeline.md`](./fund-install-pipeline.md) | [`fund-install-playbook.md`](./fund-install-playbook.md) |
 
 ## How to read these diagrams
 
