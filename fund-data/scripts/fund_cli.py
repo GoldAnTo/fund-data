@@ -359,29 +359,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     archive_full = cloud_subparsers.add_parser(
         "archive-full",
-        help="Build a private full-data archive (with raw_responses) for backup",
-    )
-    archive_full.add_argument(
-        "--source-db",
-        default=str(fund_data.DEFAULT_DB_PATH),
-        help="Full local SQLite database to archive.",
-    )
-    archive_full.add_argument(
-        "--output-dir", required=True, help="Archive output directory."
-    )
-    archive_full.add_argument(
-        "--base-url",
-        required=True,
-        help="Public HTTPS URL prefix for the archive directory.",
-    )
-    archive_full.add_argument("--version", help="Archive version, such as 2026-06-01.")
-    archive_full.add_argument(
-        "--output",
-        help="Write the JSON result to this file instead of stdout.",
-    )
-
-    archive_full = cloud_subparsers.add_parser(
-        "archive-full",
         help="Create a compressed full SQLite archive for private OSS storage",
     )
     archive_full.add_argument(
@@ -402,6 +379,10 @@ def build_parser() -> argparse.ArgumentParser:
     archive_full.add_argument(
         "--manifest-output",
         help="Optional path for the archive manifest.json file.",
+    )
+    archive_full.add_argument(
+        "--output",
+        help="Write the JSON result to this file instead of stdout.",
     )
 
     pull = cloud_subparsers.add_parser("pull", help="Download and install a cloud query bundle")
@@ -746,22 +727,13 @@ def main(argv: list[str] | None = None) -> int:
                     output_dir=args.output_dir,
                     base_url=args.base_url,
                     version=args.version,
+                    manifest_output=args.manifest_output,
                 )
                 payload = fund_cloud.json_ready(result)
                 if args.output:
                     _write_json_to_file(args.output, payload)
                 else:
                     _print_json(payload)
-                return 0
-            if args.cloud_command == "archive-full":
-                result = fund_cloud.archive_full(
-                    source_db=args.source_db,
-                    output_dir=args.output_dir,
-                    base_url=args.base_url,
-                    version=args.version,
-                    manifest_output=args.manifest_output,
-                )
-                _print_json(fund_cloud.json_ready(result))
                 return 0
             if args.cloud_command == "pull":
                 if not args.manifest_url:
