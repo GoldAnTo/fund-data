@@ -22,7 +22,6 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-          node-version: "24"
           cache: pip
 
       - name: Install dependencies
