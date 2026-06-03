@@ -611,6 +611,28 @@ def run_completion_plan(
         _write_execution(run_root, execution)
         return execution
 
+    # Refuse if the plan would exceed the call budget; we never want
+    # a single completion run to silently burst past the operator's
+    # configured ceiling, even when the plan builder approved it.
+    # Prefer the plan's own estimate so a hand-edited plan that
+    # exceeds the budget is caught even if its batch count is low.
+    budgets_pre = policy["budgets"]
+    plan_summary = plan.get("summary", {})
+    planned_calls = int(
+        plan_summary.get("estimated_provider_calls")
+        or sum(len(b.get("codes", [])) for b in plan.get("batches", []))
+    )
+    execution["summary"]["provider_calls"] = planned_calls
+    budget_calls = int(budgets_pre.get("max_provider_calls_per_run", 0))
+    if budget_calls and planned_calls > budget_calls:
+        execution["refusal_reason"] = (
+            f"plan requests {planned_calls} provider calls but "
+            f"policy budget caps at {budget_calls}"
+        )
+        execution["ended_at"] = _now_utc_iso()
+        _write_execution(run_root, execution)
+        return execution
+
     # Lock.
     lock = _lock_path()
     lock_result = _acquire_lock(lock)
@@ -657,10 +679,12 @@ def run_completion_plan(
             if record.get("rows_changed"):
                 execution["summary"]["rows_changed"] += record["rows_changed"]
             # Failure rate budget: stop if more than 25% of executed
-            # batches have failed. We measure against already-executed
-            # batches to avoid a single failure killing the run.
+            # batches have failed. We require at least 2 executed
+            # batches before judging so a single transient failure
+            # does not kill the run; once two or more have completed,
+            # a >25% failure rate is enough to call it.
             done = execution["summary"]["executed_batches"] + execution["summary"]["failed_batches"]
-            if done > 0 and failures / done > max_failure_rate:
+            if done >= 2 and failures / done > max_failure_rate:
                 execution["refusal_reason"] = (
                     f"failure rate {failures}/{done} ({failures/done:.0%}) "
                     f"exceeds budget {max_failure_rate:.0%}; stopping"
