@@ -817,6 +817,107 @@ class FundMcpErrorPathTests(unittest.TestCase):
         self.assertEqual(response["result"]["structuredContent"], payload)
         mock_health.assert_called_once()
 
+    def test_fund_completion_plan_is_read_only(self):
+        plan = {"run_id": "20260603T000000Z", "mode": "assisted", "batches": [], "blocked": []}
+        with patch.object(fund_mcp.fund_data, "build_completion_plan", return_value=plan) as mock_plan:
+            response = fund_mcp.handle_message({
+                "jsonrpc": "2.0",
+                "id": 60,
+                "method": "tools/call",
+                "params": {
+                    "name": "fund_completion_plan",
+                    "arguments": {"queue_path": "/tmp/queue.json"},
+                },
+            })
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(response["result"]["structuredContent"], plan)
+        mock_plan.assert_called_once_with(
+            queue_path="/tmp/queue.json",
+            config_path=None,
+            output_path=None,
+        )
+
+    def test_fund_completion_run_passes_confirm_execute(self):
+        execution = {"run_id": "20260603T000000Z", "executed": True, "refusal_reason": None, "summary": {}}
+        with patch.object(fund_mcp.fund_data, "run_completion_plan", return_value=execution) as mock_run:
+            response = fund_mcp.handle_message({
+                "jsonrpc": "2.0",
+                "id": 61,
+                "method": "tools/call",
+                "params": {
+                    "name": "fund_completion_run",
+                    "arguments": {
+                        "plan_path": "/tmp/plan.json",
+                        "config_path": "/tmp/policy.json",
+                        "confirm_execute": True,
+                    },
+                },
+            })
+        self.assertFalse(response["result"]["isError"])
+        mock_run.assert_called_once_with(
+            plan_path="/tmp/plan.json",
+            config_path="/tmp/policy.json",
+            confirm_execute=True,
+        )
+
+    def test_fund_completion_run_refusal_surfaces_refusal_reason(self):
+        execution = {
+            "run_id": "20260603T000000Z",
+            "executed": False,
+            "refusal_reason": "mode=audit_only forbids execution",
+            "summary": {},
+        }
+        with patch.object(fund_mcp.fund_data, "run_completion_plan", return_value=execution):
+            response = fund_mcp.handle_message({
+                "jsonrpc": "2.0",
+                "id": 62,
+                "method": "tools/call",
+                "params": {
+                    "name": "fund_completion_run",
+                    "arguments": {"plan_path": "/tmp/plan.json", "confirm_execute": True},
+                },
+            })
+        result = response["result"]
+        # Refusal is a valid completion, not a tool error. The agent
+        # branches on ``structuredContent.refusal_reason``.
+        self.assertFalse(result["isError"])
+        self.assertEqual(result["structuredContent"]["refusal_reason"], "mode=audit_only forbids execution")
+
+    def test_fund_completion_verify_returns_report(self):
+        report = {
+            "before_queue_size": 100,
+            "after_queue_size": 80,
+            "improved_items": 20,
+            "rows_changed": 25,
+            "publish_recommended": True,
+        }
+        with patch.object(fund_mcp.fund_data, "verify_completion_run", return_value=report) as mock_verify:
+            response = fund_mcp.handle_message({
+                "jsonrpc": "2.0",
+                "id": 63,
+                "method": "tools/call",
+                "params": {
+                    "name": "fund_completion_verify",
+                    "arguments": {
+                        "before_queue_path": "/tmp/before.json",
+                        "after_queue_path": "/tmp/after.json",
+                        "execution_path": "/tmp/execution.json",
+                    },
+                },
+            })
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(response["result"]["structuredContent"], report)
+        mock_verify.assert_called_once()
+
+    def test_fund_completion_run_tool_description_warns_no_publish(self):
+        """The tool description must explicitly tell agents that
+        fund_completion_run never publishes OSS -- otherwise an
+        agent could assume a successful run is publication-ready."""
+        tool = next(
+            t for t in fund_mcp.TOOLS if t["name"] == "fund_completion_run"
+        )
+        self.assertIn("Never publishes OSS", tool["description"])
+
 
 if __name__ == "__main__":
     unittest.main()

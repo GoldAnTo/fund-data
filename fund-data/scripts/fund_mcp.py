@@ -335,6 +335,39 @@ TOOLS: list[dict[str, Any]] = [
             "limit": _integer_schema("Maximum queue items to return.", minimum=1),
         },
     ),
+    _tool(
+        "fund_completion_plan",
+        "Read-only. Convert a self-audit queue JSON into a bounded batch plan.",
+        {
+            "queue_path": _string_schema("Path to the self-audit queue JSON."),
+            "config_path": _string_schema("Optional path to the OpenClaw policy JSON."),
+            "output_path": _string_schema("Optional path to write the plan JSON."),
+        },
+        required=["queue_path"],
+    ),
+    _tool(
+        "fund_completion_run",
+        "Execute a completion plan under budget. Mutates local SQLite ONLY when confirm_execute=true. "
+        "Never publishes OSS. Use fund_cli cloud build-bundle + cloud upload as a separate operator action.",
+        {
+            "plan_path": _string_schema("Path to the completion plan JSON."),
+            "config_path": _string_schema("Optional path to the OpenClaw policy JSON."),
+            "confirm_execute": _boolean_schema(
+                "Required for any non-dry-run execution."
+            ),
+        },
+        required=["plan_path"],
+    ),
+    _tool(
+        "fund_completion_verify",
+        "Read-only. Compare a before/after self-audit queue and the execution report.",
+        {
+            "before_queue_path": _string_schema("Path to the before queue JSON."),
+            "after_queue_path": _string_schema("Path to the after queue JSON."),
+            "execution_path": _string_schema("Path to the execution.json report."),
+        },
+        required=["before_queue_path", "after_queue_path", "execution_path"],
+    ),
 ]
 
 
@@ -705,6 +738,30 @@ def _call_fund_self_audit(arguments: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _call_fund_completion_plan(arguments: dict[str, Any]) -> dict[str, Any]:
+    return fund_data.build_completion_plan(
+        queue_path=_required_str(arguments, "queue_path"),
+        config_path=_optional_str(arguments, "config_path"),
+        output_path=_optional_str(arguments, "output_path"),
+    )
+
+
+def _call_fund_completion_run(arguments: dict[str, Any]) -> dict[str, Any]:
+    return fund_data.run_completion_plan(
+        plan_path=_required_str(arguments, "plan_path"),
+        config_path=_optional_str(arguments, "config_path"),
+        confirm_execute=_optional_bool(arguments, "confirm_execute"),
+    )
+
+
+def _call_fund_completion_verify(arguments: dict[str, Any]) -> dict[str, Any]:
+    return fund_data.verify_completion_run(
+        before_queue_path=_required_str(arguments, "before_queue_path"),
+        after_queue_path=_required_str(arguments, "after_queue_path"),
+        execution_path=_required_str(arguments, "execution_path"),
+    )
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "fund_search": _call_fund_search,
     "fund_list": _call_fund_list,
@@ -726,6 +783,9 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "fund_cloud_status": _call_fund_cloud_status,
     "fund_health_check": _call_fund_health_check,
     "fund_self_audit": _call_fund_self_audit,
+    "fund_completion_plan": _call_fund_completion_plan,
+    "fund_completion_run": _call_fund_completion_run,
+    "fund_completion_verify": _call_fund_completion_verify,
 }
 
 
