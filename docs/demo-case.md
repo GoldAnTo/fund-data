@@ -11,6 +11,114 @@
 
 > 这一节是给你自己准备的"开机流程"。**下午演示开始前先完整跑一遍**，确认网络、数据库、命令路径都活。
 
+### 0.0 数据全景速查（先讲这一节，回答"数据从哪来/查哪些/缺哪些"）
+
+> **这一节是观众 80% 的问题源头**——"数据从哪抓的？""能查什么？""还有什么没补？"三个问题都在这里答。演示时可以先口述一遍，再开始 hero flow。
+
+#### 0.0.1 数据从哪来 — 4 个 provider 走 fallback 链
+
+项目不依赖单一接口，**主链路是 `auto` 模式按 `Eastmoney → AkShare → Investoday → Tushare` 顺序尝试**，每个 provider 失败就自动 fall through。
+
+| Provider | 接入方式 | 主力场景 | 是否要 key |
+|---|---|---|---|
+| **Eastmoney** | 直接 HTTP | 基金池、快照、费率、净值（部分） | **免 key** |
+| **AkShare** | Python 库（v1.18.64） | 档案、持仓、债券、行业、费率、分红、拆分、经理、净值（部分） | **免 key** |
+| **Investoday** | 付费 API | 基金池/档案/净值/股票持仓/债券持仓/行业配置（180+ 接口） | **要 `INVESTODAY_API_KEY`** |
+| **Tushare** | Python 库 | 基金池/档案/净值/股票持仓/经理 | **要 `TUSHARE_TOKEN`** |
+
+> **讲法**：
+> "实际主力是 AkShare 不是 Eastmoney——很多人会以为免 key 的 Eastmoney 应该是主力。看一眼表就能发现：fund_profiles 几乎全来自 `akshare.fund_overview_em`，stock/bond/industry 三个表的 source 全部是 AkShare。**Eastmoney 真正占主力的是 funds 池、snapshot 和 fee_structures 三张**。这个错位是 AkShare 接口覆盖更广造成的，不是设计失误。"
+
+#### 0.0.2 能查哪些数据 — 11 张业务表
+
+> 默认 cloud query bundle 含 11 张业务表；本地 full DB 还有 `raw_responses` / `sync_runs` / `sync_failures` / `schema_migrations` 4 张审计表。
+
+| 数据集 | 表名 | 主要字段 | 对应 CLI |
+|---|---|---|---|
+| 基金池 | `funds` | fund_code, fund_name, fund_type, company, manager, nav, nav_date, other_names, source, updated_at | `list` / `search` |
+| 基金档案 | `fund_profiles` | establishment_date, asset_size, asset_size_date, company, manager, performance_benchmark, source | `profile` |
+| 历史净值 | `nav_history` | nav_date, unit_nav, accumulated_nav, daily_growth_rate, source | `nav` |
+| 快照 | `snapshots` | source_rate, current_rate, min_purchase, stock_codes[], returns{1m/3m/6m/1y}, source | `snapshot` |
+| 股票持仓 | `stock_holdings` | report_period, stock_code, stock_name, net_value_ratio, shares, market_value, source | `holdings` |
+| 债券持仓 | `bond_holdings` | report_period, bond_code, bond_name, net_value_ratio, source | `bonds` |
+| 行业配置 | `industry_allocations` | report_period, industry_name, net_value_ratio, source | `industries` |
+| 费率 | `fee_structures` | fee_type, fee_indicator, condition, rate, source | `fees` |
+| 分红 | `dividends` | dividend_date, dividend_per_unit, source | `dividends` |
+| 拆分/折算 | `splits` | split_date, split_ratio, source | `splits` |
+| 基金经理 | `fund_managers` | manager_name, company, current_fund_codes (CSV), current_aum, best_return, source | `managers` |
+
+> **讲法**：
+> "11 张业务表覆盖了基金研究能想到的几乎所有维度——基础信息、时间序列、截面、持仓三个角度（股票/债券/行业）、费率、分红、拆分、经理。每一张都有 CLI 子命令同名对应。"
+
+#### 0.0.3 当前覆盖度（2026-06-03 10:21 实测）
+
+| 数据集 | 行数 | 覆盖基金 / 池 | 覆盖度 | 主力 source |
+|---|---:|---:|---:|---|
+| `funds` 基金池 | 26,953 | 26,953 | **100.00%** | `eastmoney.fundcode_search` |
+| `fund_profiles` | 26,953 | 26,953 | **100.00%** | `akshare.fund_overview_em` |
+| `snapshots` | 26,952 | 26,952 | **100.00%** | `eastmoney.snapshot` |
+| `fee_structures` | 80,097 | 26,929 | **99.91%** | `eastmoney.fund_fee_page` |
+| `nav_history` | 1,318,192 | 26,337 | **97.71%** | `akshare.fund_open_fund_info_em` (主) + `eastmoney.nav_history` |
+| `fund_managers` | 34,654 经理 | 26,645 (可解析) | **98.86%** | `akshare.fund_manager_em` |
+| `bond_holdings` | 548,975 | 15,426 | **57.23%** | `akshare.fund_portfolio_bond_hold_em` |
+| `stock_holdings` | 2,475,195 | 13,255 | **49.18%** | `akshare.fund_portfolio_hold_em` |
+| `industry_allocations` | 415,700 | 13,268 | **49.23%** | `akshare.fund_portfolio_industry_allocation_em` |
+| `dividends` | 52,347 | 7,702 | **28.58%** | `akshare.fund_open_fund_info_em:分红送配详情` |
+| `splits` | 1,740 | 589 | **2.19%** | `akshare.fund_open_fund_info_em:拆分详情` |
+
+**数据时间范围**（2026-06-03 实测）：
+
+- 最新 `nav_date`: **2026-06-02**
+- `nav_history` 抓取窗口：2026-06-01 ~ 2026-06-03
+- `snapshots` 抓取窗口：2026-06-01 ~ 2026-06-03
+- `stock/bond/industry` 抓取窗口：2026-06-01 ~ 2026-06-02
+- `dividends/splits` 抓取窗口：2026-06-01
+
+> **讲法**：
+> "覆盖率分三档：
+> 1. **100% / 接近 100%**：funds、fund_profiles、snapshots、fee_structures、fund_managers——这些是基础信息，**主力源是 Eastmoney 和 AkShare，免 key 就能拉满**；
+> 2. **97%~98%**：nav_history——还差 616 只基金，主要是后端份额类、稀疏产品和新基金；
+> 3. **<60%**：stock_holdings、bond_holdings、industry_allocations——**主力源 AkShare 当前有 schema drift**（见 0.0.4），抓取卡住；剩下缺的主要是货币型、纯债、REITs 这种天然没有股票持仓的基金。"
+>
+> "dividends 28.58% 和 splits 2.19% 是天然稀疏——大部分基金成立以来没分过红、没拆过份额，不是 bug。"
+
+#### 0.0.4 还没补全的数据 + 为什么
+
+| 缺口 | 缺失基金数 | 主要原因 | 补齐路径 |
+|---|---:|---|---|
+| `nav_history` 差 616 只 | 616 | 后端份额类、稀疏产品、新产品 | 等 provider 能力变化后重试；不能每晚 retry |
+| `snapshots` 差 1 只 | 1 | 类型未识别的新基金 | 等 Eastmoney 更新 `fundcode_search` / snapshot 页面 |
+| `fee_structures` 差 24 只 | 24 | 同上 + 少量货币型 | 定期重试费率页抓取；尾部小缺口 |
+| `fund_managers` 差 308 只 | 308 | 后端份额类、未识别新基金 | **需做 fund-centric 物化表或 view**（PR 待开） |
+| `stock_holdings` 差 13,698 只 | 13,698 | **AkShare v1.18.64 schema drift** + 货币/纯债/REITs/QDII 天然没有 | 短期：打 patch 或 wrap AkShare 调用；长期：补 Investoday 的 `bond_holdings` / `industry_allocations` 接口 |
+| `bond_holdings` 差 11,527 只 | 11,527 | 同上 + 股票型/指数型无债券 | 同上 |
+| `industry_allocations` 差 13,685 只 | 13,685 | 同上 + 货币/纯债/REITs 天然没有 | 同上 |
+| `dividends` 差 19,251 只 | 19,251 | 结构性稀疏 | **不补**——多数基金没分过红 |
+| `splits` 差 26,364 只 | 26,364 | 结构性极稀疏 | **不补**——拆分事件本来就少 |
+
+**当前真实阻塞 — AkShare v1.18.64 schema drift（2026-06-02 起）**：
+
+AkShare 三个接口在当前版本坏了：
+
+| 接口 | 错误 | 根因 |
+|---|---|---|
+| `fund_portfolio_industry_allocation_em` | `ValueError: Length mismatch: Expected axis has 1 elements, new values have 17 elements` | `reset_index()` 创 1 列 index，然后 `temp_df.columns = [...]`（17 列）失败 |
+| `fund_portfolio_bond_hold_em` | `KeyError: '占净值比例'` | Eastmoney 改了这个列名，新名未知 |
+| `fund_portfolio_hold_em` | 返回 0 行（不抛错） | API 响应结构变了，没显式 error |
+
+**实际影响**：industry_allocations、bond_holdings、stock_holdings 三张表从 2026-06-02 起抓取冻结（最后一次成功 stock_holdings.fetched_at = 2026-06-02 21:24）。`run_provider_chain` 正确 fall through AkShare → Investoday，但 `investoday.py` 还没实现 `bond_holdings` 和 `industry_allocations`——所以这两个数据集当前**没有下游 provider 在跑**。
+
+**修法选项**：
+1. **短期（推荐）**：在 `investoday.py` 加 `bond_holdings` / `industry_allocations` 方法，调用 `/fund/portfolio-bond-holdings` 和 `/fund/portfolio-industry-alloc` 端点。API key 已配好，立即生效。
+2. **长期**：把 AkShare 调用包一层 try/except + 显式列名 fallback，不依赖上游版本。
+
+> **演示时怎么用这个**：
+> - 如果观众问"为什么 stock/bond/industry 缺这么多"——直接聊到 AkShare drift，给出上面表里"补齐路径"那一列；
+> - 如果观众问"接下来做什么"——这就是 PR 1（`fix(akshare)`）和 PR 2（`feat(investoday)`）的源头；
+> - **不要回避**——这是项目当前最真实的 known gap，**主动说出来比被问到再解释更显诚意**。
+
+
+
 ### 0.1 现场环境自检
 
 ```bash
@@ -589,28 +697,36 @@ python3 -c "from scripts.fund_data.paths import default_db_path; print(default_d
 
 ## 5. 三种时长版本
 
-### 5.1 5 分钟精简版（只跑 §1 Step 1-3 + 结尾收束）
+### 5.1 5 分钟精简版（§0.0 数据全景快讲 + §1 Step 1-3 + 收束）
 
 | 步骤 | 时长 | 命令 |
 |---|---|---|
+| 开场 + 数据全景（快讲） | 1min | 直接口述 §0.0 三段 |
 | doctor | 30s | `doctor --quiet` |
 | coverage | 1min | `coverage-report --code 110022` |
 | snapshot | 1min | `snapshot 110022` |
-| nav | 1.5min | `nav 110022 --start-date 2024-01-22 --end-date 2024-01-26` |
-| 收束 | 1min | 一句话讲"MCP + cloud + Python import" |
+| nav | 1min | `nav 110022 --start-date 2024-01-22 --end-date 2024-01-26` |
+| 收束 | 30s | 一句话讲"MCP + cloud + Python import" |
 
-### 5.2 10 分钟标准版（§1 完整 7 步）
-
-完整跑 §1 所有 Step 1-7。
-
-### 5.3 15 分钟完整版（§1 + §2.3 + §2.4 + FAQ）
+### 5.2 10 分钟标准版（§0.0 数据全景 + §1 完整 7 步）
 
 | 段落 | 时长 |
 |---|---|
-| §1 Hero flow 7 步 | 10min |
+| 开场 | 30s |
+| §0.0 数据全景 | 1min |
+| §1 Hero flow 7 步 | 7.5min |
+| 收束 | 1min |
+
+### 5.3 15 分钟完整版（§0.0 + §1 + §2.3 + §2.4 + FAQ）
+
+| 段落 | 时长 |
+|---|---|
+| 开场 | 30s |
+| §0.0 数据全景 | 1min |
+| §1 Hero flow 7 步 | 7.5min |
 | §2.3 Cloud bundle | 1.5min |
 | §2.4 MCP 示意 | 2min |
-| FAQ 留 Q&A | 1.5min |
+| FAQ / Q&A | 2.5min |
 
 ---
 

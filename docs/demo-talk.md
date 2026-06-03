@@ -21,7 +21,52 @@
 
 ---
 
-## 第一幕 · 数据底座（1.5 分钟）
+## 第零幕 · 数据全景（1 分钟）— 先讲这一节，回答"从哪来/查哪些/缺哪些"
+
+> **如果时间紧可以跳这一节**。但观众 80% 的问题（"数据从哪抓的？""还有什么没补？"）都从这里答，**主动讲比被问到再解释更显诚意**。
+
+【屏幕】打开 `docs/demo-case.md` §0.0 的覆盖度表，**或者**口述下面三段。
+
+### 0.1 数据从哪来
+
+> "项目不依赖单一接口。`auto` 模式按 **Eastmoney → AkShare → Investoday → Tushare** 顺序尝试，失败就 fall through。
+>
+> 实际主力是 **AkShare**，不是 Eastmoney——fund_profiles 几乎全来自 `akshare.fund_overview_em`，股票/债券/行业三个持仓表的 source 全部是 AkShare。Eastmoney 真正占主力的是 **funds 池、snapshot、fee_structures** 三张。
+>
+> 这个错位是 AkShare 接口覆盖更广造成的，不是设计失误——Eastmoney 免 key 主力场景是基金池和快照，AkShare 免 key 主力场景是档案和持仓。"
+
+### 0.2 能查哪些数据 — 11 张业务表
+
+> "11 张业务表对应 11 个 CLI 子命令：
+>
+> - **基础**：基金池（list/search）、档案（profile）、经理（managers）
+> - **时间序列**：净值（nav）
+> - **截面**：快照（snapshot）
+> - **持仓三件套**：股票（holdings）、债券（bonds）、行业（industries）
+> - **权益事件**：分红（dividends）、拆分（splits）
+> - **费率**：fees
+>
+> 每张表都有 `source` 字段，标明数据来自哪个 provider 哪个 endpoint——这是项目做'数据可追溯'的硬约束。"
+
+### 0.3 当前覆盖度 + 哪些还没补
+
+> "覆盖度分三档（2026-06-03 10:21 实测）：
+>
+> - **100% / 接近 100%**：基金池、档案、快照、费率、经理——**免 key 主力源就能拉满**；
+> - **97%**：净值历史——还差 616 只，主要是后端份额、稀疏产品、新基金；
+> - **<60%**：股票/债券/行业三个持仓表——**主力源 AkShare 当前有 schema drift**，抓取从 6-2 起卡住；其余缺口是货币型、纯债、REITs 天然没有股票持仓。
+>
+> 分红 28.58% 和拆分 2.19% 是天然稀疏，不补也合理。
+>
+> **当前最真实的 known gap**：AkShare v1.18.64 三个接口坏了——industry_allocations 报 Length mismatch、bond_holdings 报 KeyError、stock_holdings 返回 0 行。短期修法是给 investoday.py 补 bond_holdings 和 industry_allocations 方法，API key 已经配好。"
+>
+> 【停顿】
+>
+> "我提这个不是示弱，是让大家知道这个项目**不是把所有问题都藏起来**——我们把'有'和'缺'都显式说出来，agent 和人都能基于这个做判断。"
+
+---
+
+
 
 【屏幕】运行 `python3 fund-data/scripts/fund_cli.py doctor --quiet | python3 -c "..."` 提取关键字段。
 
