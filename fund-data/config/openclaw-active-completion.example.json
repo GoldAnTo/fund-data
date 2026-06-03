@@ -1,0 +1,53 @@
+{
+  "mode": "assisted",
+  "_mode_legend": {
+    "audit_only": "OpenClaw can inspect and produce plans, but cannot mutate the DB.",
+    "assisted": "OpenClaw produces a completion plan and waits for human approval before execution.",
+    "autonomous": "OpenClaw can execute allowed work under strict budget and policy."
+  },
+  "database": {
+    "prefer_cloud_cache": true,
+    "cache_dir": "~/.cache/fund-data",
+    "full_db_path": "fund-data/data/fund_data.sqlite"
+  },
+  "allowed_priorities": ["P1", "P2", "P3"],
+  "allowed_datasets": [
+    "fund_profiles",
+    "nav_history",
+    "snapshots",
+    "stock_holdings",
+    "bond_holdings",
+    "industry_allocations",
+    "fee_structures"
+  ],
+  "blocked_datasets": ["dividends", "splits"],
+  "provider_policy": {
+    "fund_profiles": "auto",
+    "nav_history": "eastmoney",
+    "snapshots": "eastmoney",
+    "stock_holdings": "auto",
+    "bond_holdings": "auto",
+    "industry_allocations": "auto",
+    "fee_structures": "auto"
+  },
+  "provider_notes": {
+    "eastmoney_first": "Eastmoney is the most stable channel as of 2026-06-02 (0.36 s/fund for NAV, ~95% success rate). Used as the default for nav_history and snapshots.",
+    "akshare_v1_18_64_drift": "AkShare v1.18.64 has known schema drift on fund_portfolio_bond_hold_em (KeyError on 占净值比例) and fund_portfolio_industry_allocation_em (Length mismatch on reset_index). Stock holdings silently returns 0 rows. The auto chain falls through to Investoday for stock_holdings, but bond/industry have no downstream fallback yet — expect low success rate on those two until the Investoday bond/industry endpoints land.",
+    "tushare_role": "If TUSHARE_TOKEN is set, Tushare covers AkShare-only capabilities at ~200 calls/min. Pair `--provider tushare` with the `auto` chain as a fallback.",
+    "investoday_role": "Investoday (with INVESTODAY_API_KEY) is the long-term replacement for the broken AkShare paths. Currently supports stock_holdings + fund_profiles; bond/industry endpoints are pending."
+  },
+  "budgets": {
+    "max_funds_per_run": 100,
+    "max_provider_calls_per_run": 300,
+    "max_elapsed_minutes": 30,
+    "concurrency": 4,
+    "min_interval_seconds": 0.2,
+    "max_failure_rate": 0.25
+  },
+  "publish": {
+    "mode": "manual",
+    "min_rows_changed": 100,
+    "require_tests": true,
+    "require_doctor": true
+  }
+}
