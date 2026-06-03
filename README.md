@@ -20,7 +20,7 @@ data without re-deriving the parsing logic every time.
 > Architecture reference: [`fund-data/ARCHITECTURE.md`](fund-data/ARCHITECTURE.md).
 > Provider onboarding: [`fund-data/PROVIDERS.md`](fund-data/PROVIDERS.md).
 > Current data coverage: [`docs/data-coverage-summary.md`](docs/data-coverage-summary.md).
-> Demo talk track: [`docs/demo-talk-cn.md`](docs/demo-talk-cn.md).
+> Demo talk track: 中文 [`docs/demo-talk-cn.md`](docs/demo-talk-cn.md) / English [`docs/demo-talk.md`](docs/demo-talk.md). Detailed walkthrough (long form): [`docs/demo-case.md`](docs/demo-case.md).
 
 ## Status (v0.2.0)
 
