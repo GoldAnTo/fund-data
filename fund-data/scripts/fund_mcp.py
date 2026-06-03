@@ -11,6 +11,7 @@ base without shelling out to ``fund_cli.py``.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -102,6 +103,12 @@ COMMON_ARGS = {
     },
 }
 
+REFRESH_ARG = {
+    "refresh": _boolean_schema(
+        "Bypass local OSS/SQLite rows and refresh from the provider chain."
+    )
+}
+
 
 TOOLS: list[dict[str, Any]] = [
     _tool(
@@ -109,6 +116,7 @@ TOOLS: list[dict[str, Any]] = [
         "Search Chinese public funds by keyword, pinyin, name, or 6-digit code.",
         {
             **COMMON_ARGS,
+            **REFRESH_ARG,
             "keyword": _string_schema("Fund keyword, name, pinyin, theme, or 6-digit code."),
             "limit": _integer_schema("Maximum rows to return.", minimum=1),
         },
@@ -141,7 +149,7 @@ TOOLS: list[dict[str, Any]] = [
     _tool(
         "fund_profile",
         "Fetch and persist profile/basic archive data for one fund.",
-        {**COMMON_ARGS, "code": _string_schema("6-digit fund code.")},
+        {**COMMON_ARGS, **REFRESH_ARG, "code": _string_schema("6-digit fund code.")},
         required=["code"],
     ),
     _tool(
@@ -385,6 +393,21 @@ def _provider(arguments: dict[str, Any]) -> str:
     return _optional_str(arguments, "provider") or fund_data.PROVIDER_AUTO
 
 
+def _refresh(arguments: dict[str, Any]) -> bool:
+    return _optional_bool(arguments, "refresh")
+
+
+def _exact_fund_code(value: str) -> str | None:
+    text = value.strip()
+    return text if re.fullmatch(r"\d{6}", text) else None
+
+
+def _local_rows(table: str, arguments: dict[str, Any], fund_code: str) -> list[dict[str, Any]]:
+    if _refresh(arguments):
+        return []
+    return fund_data.export_table(table, db_path=_db(arguments), fund_code=fund_code)
+
+
 def _maybe_bootstrap_cloud(arguments: dict[str, Any]) -> None:
     if _optional_str(arguments, "db"):
         return
@@ -397,8 +420,14 @@ def _limit(rows: list[dict[str, Any]], arguments: dict[str, Any]) -> list[dict[s
 
 
 def _call_fund_search(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    keyword = _required_str(arguments, "keyword")
+    code = _exact_fund_code(keyword)
+    if code:
+        rows = _local_rows("funds", arguments, code)
+        if rows:
+            return _limit(rows, arguments)
     rows = fund_data.search_funds(
-        _required_str(arguments, "keyword"),
+        keyword,
         db_path=_db(arguments),
         provider=_provider(arguments),
     )
@@ -429,8 +458,12 @@ def _call_fund_snapshot(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def _call_fund_profile(arguments: dict[str, Any]) -> dict[str, Any]:
+    code = _required_str(arguments, "code")
+    rows = _local_rows("fund_profiles", arguments, code)
+    if rows:
+        return rows[0]
     return fund_data.fetch_profile(
-        _required_str(arguments, "code"), db_path=_db(arguments), provider=_provider(arguments)
+        code, db_path=_db(arguments), provider=_provider(arguments)
     )
 
 

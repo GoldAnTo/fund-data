@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,36 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from scripts import fund_mcp  # noqa: E402
+
+
+def _seed_fund_profile(db_path: Path) -> None:
+    store = fund_mcp.fund_data.FundDataStore(db_path)
+    store.upsert_funds(
+        [
+            {
+                "fund_code": "110022",
+                "fund_name": "易方达消费行业股票",
+                "fund_type": "股票型",
+                "company": "易方达基金",
+                "manager": "萧楠",
+                "nav": None,
+                "nav_date": "",
+                "other_names": "",
+                "source": "local.test",
+            }
+        ]
+    )
+    store.upsert_profile(
+        {
+            "fund_code": "110022",
+            "fund_name": "易方达消费行业股票",
+            "full_name": "易方达消费行业股票型证券投资基金",
+            "fund_type": "股票型",
+            "fund_company": "易方达基金",
+            "manager": "萧楠",
+            "source": "local.profile",
+        }
+    )
 
 
 class FundMcpProtocolTests(unittest.TestCase):
@@ -117,6 +148,93 @@ class FundMcpProtocolTests(unittest.TestCase):
         mock_bootstrap.assert_called_once_with()
         mock_search.assert_called_once_with("沪深300", db_path=None, provider="auto")
         self.assertFalse(response["result"]["isError"])
+
+    def test_known_code_search_uses_local_export_before_provider_api(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            _seed_fund_profile(db_path)
+
+            with patch.object(
+                fund_mcp.fund_data, "search_funds", side_effect=AssertionError("provider ran")
+            ):
+                response = fund_mcp.handle_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 7,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "fund_search",
+                            "arguments": {"keyword": "110022", "db": str(db_path)},
+                        },
+                    }
+                )
+
+        result = response["result"]
+        self.assertFalse(result["isError"])
+        self.assertEqual(result["structuredContent"]["count"], 1)
+        self.assertEqual(result["structuredContent"]["rows"][0]["fund_code"], "110022")
+        self.assertEqual(result["structuredContent"]["rows"][0]["fund_name"], "易方达消费行业股票")
+
+    def test_known_code_profile_uses_local_export_before_provider_api(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            _seed_fund_profile(db_path)
+
+            with patch.object(
+                fund_mcp.fund_data, "fetch_profile", side_effect=AssertionError("provider ran")
+            ):
+                response = fund_mcp.handle_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 8,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "fund_profile",
+                            "arguments": {"code": "110022", "db": str(db_path)},
+                        },
+                    }
+                )
+
+        result = response["result"]
+        self.assertFalse(result["isError"])
+        self.assertEqual(result["structuredContent"]["fund_code"], "110022")
+        self.assertEqual(result["structuredContent"]["manager"], "萧楠")
+
+    def test_known_code_profile_refresh_bypasses_local_export(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            _seed_fund_profile(db_path)
+            refreshed = {
+                "fund_code": "110022",
+                "fund_name": "易方达消费行业股票",
+                "manager": "实时经理",
+                "source": "provider.test",
+            }
+
+            with patch.object(
+                fund_mcp.fund_data, "fetch_profile", return_value=refreshed
+            ) as mock_profile:
+                response = fund_mcp.handle_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 9,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "fund_profile",
+                            "arguments": {
+                                "code": "110022",
+                                "db": str(db_path),
+                                "refresh": True,
+                            },
+                        },
+                    }
+                )
+
+        mock_profile.assert_called_once_with(
+            "110022", db_path=str(db_path), provider="auto"
+        )
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(response["result"]["structuredContent"], refreshed)
 
     def test_stdio_entrypoint_reads_newline_delimited_json_rpc(self):
         message = {
