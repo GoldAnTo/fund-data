@@ -87,3 +87,14 @@ htmlcov/
 **/data/backfill_state.json
 **/data/backfill_summary.json
 **/data/backfill_logs/
+
+# OpenClaw active-completion runtime artifacts (queue JSON dumps,
+# per-run execution/verification/planning outputs, lock file). The
+# runner rebuilds these on every invocation; keep them out of git so
+# the project state is deterministic on clone.
+**/data/openclaw_runs/
+**/data/openclaw_self_audit_queue.json
+**/data/openclaw_self_audit_after.json
+**/data/openclaw_completion_plan.json
+**/data/openclaw_active_completion.lock
+**/data/self_audit_queue.json
