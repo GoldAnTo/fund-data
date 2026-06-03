@@ -551,6 +551,96 @@ class JsonFlagContractTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(json.loads(buf.getvalue()), payload)
 
+    def test_completion_plan_cli_prints_plan(self):
+        plan = {
+            "run_id": "20260603T000000Z",
+            "mode": "assisted",
+            "summary": {"planned_items": 1},
+            "batches": [],
+            "blocked": [],
+        }
+        with mock.patch.object(fund_cli.fund_data, "build_completion_plan", return_value=plan) as mock_plan:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                exit_code = fund_cli.main(
+                    ["completion-plan", "--queue", "/tmp/queue.json"]
+                )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(buf.getvalue()), plan)
+        mock_plan.assert_called_once()
+        kwargs = mock_plan.call_args.kwargs
+        self.assertEqual(kwargs["queue_path"], "/tmp/queue.json")
+        self.assertIsNone(kwargs["config_path"])
+
+    def test_completion_run_cli_dry_run_prints_execution(self):
+        execution = {
+            "run_id": "20260603T000000Z",
+            "executed": False,
+            "refusal_reason": "pass --confirm-execute to allow execution in mode=assisted",
+            "summary": {"executed_batches": 0, "failed_batches": 0},
+            "batches": [],
+        }
+        with mock.patch.object(fund_cli.fund_data, "run_completion_plan", return_value=execution):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                exit_code = fund_cli.main(
+                    ["completion-run", "--plan", "/tmp/plan.json"]
+                )
+        # Without --confirm-execute, the runner refuses but the CLI
+        # still exits 0 so the operator can see the reason in JSON.
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(buf.getvalue()), execution)
+
+    def test_completion_run_cli_passes_confirm_execute_flag(self):
+        execution = {
+            "run_id": "20260603T000000Z",
+            "executed": True,
+            "refusal_reason": None,
+            "summary": {"executed_batches": 1, "failed_batches": 0},
+            "batches": [],
+        }
+        with mock.patch.object(fund_cli.fund_data, "run_completion_plan", return_value=execution) as mock_run:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                exit_code = fund_cli.main(
+                    [
+                        "completion-run",
+                        "--plan",
+                        "/tmp/plan.json",
+                        "--config",
+                        "/tmp/policy.json",
+                        "--confirm-execute",
+                    ]
+                )
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(mock_run.call_args.kwargs["confirm_execute"])
+        self.assertEqual(mock_run.call_args.kwargs["config_path"], "/tmp/policy.json")
+
+    def test_completion_verify_cli_prints_report(self):
+        report = {
+            "before_queue_size": 100,
+            "after_queue_size": 80,
+            "improved_items": 20,
+            "rows_changed": 25,
+            "publish_recommended": True,
+        }
+        with mock.patch.object(fund_cli.fund_data, "verify_completion_run", return_value=report):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                exit_code = fund_cli.main(
+                    [
+                        "completion-verify",
+                        "--before",
+                        "/tmp/before.json",
+                        "--after",
+                        "/tmp/after.json",
+                        "--execution",
+                        "/tmp/execution.json",
+                    ]
+                )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(buf.getvalue()), report)
+
 
 if __name__ == "__main__":
     unittest.main()

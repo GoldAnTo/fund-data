@@ -395,6 +395,40 @@ def build_parser() -> argparse.ArgumentParser:
     self_audit.add_argument("--output")
     _add_common_db_arg(self_audit)
 
+    completion_plan = subparsers.add_parser(
+        "completion-plan",
+        help="Convert a self-audit queue JSON into a bounded batch plan (read-only)",
+    )
+    completion_plan.add_argument("--queue", required=True, help="Path to the self-audit queue JSON")
+    completion_plan.add_argument("--config", help="Path to the OpenClaw policy JSON")
+    completion_plan.add_argument("--output", help="Write the plan JSON to this file")
+
+    completion_run = subparsers.add_parser(
+        "completion-run",
+        help="Execute a completion plan. Refuses to mutate without --confirm-execute and a non-audit policy mode.",
+    )
+    completion_run.add_argument("--plan", required=True, help="Path to the completion plan JSON")
+    completion_run.add_argument("--config", help="Path to the OpenClaw policy JSON")
+    completion_run.add_argument(
+        "--confirm-execute",
+        action="store_true",
+        help="Required for any non-dry-run execution.",
+    )
+    completion_run.add_argument(
+        "--output", help="Write the execution report JSON to this file (default: alongside the plan)"
+    )
+
+    completion_verify = subparsers.add_parser(
+        "completion-verify",
+        help="Compare a before/after self-audit queue and the execution report",
+    )
+    completion_verify.add_argument("--before", required=True, help="Path to the before queue JSON")
+    completion_verify.add_argument("--after", required=True, help="Path to the after queue JSON")
+    completion_verify.add_argument(
+        "--execution", required=True, help="Path to the execution.json report"
+    )
+    completion_verify.add_argument("--output", help="Write the verification report JSON to this file")
+
     coverage_report = subparsers.add_parser(
         "coverage-report",
         help="Show completeness score for funds with detailed missing-dataset breakdown",
@@ -794,6 +828,52 @@ def main(argv: list[str] | None = None) -> int:
                 print(args.output)
             else:
                 _print_json(payload)
+            return 0
+
+        if args.command == "completion-plan":
+            plan = fund_data.build_completion_plan(
+                queue_path=args.queue,
+                config_path=args.config,
+                output_path=args.output,
+            )
+            if args.output:
+                print(args.output)
+            else:
+                _print_json(plan)
+            return 0
+
+        if args.command == "completion-run":
+            execution = fund_data.run_completion_plan(
+                plan_path=args.plan,
+                config_path=args.config,
+                confirm_execute=args.confirm_execute,
+            )
+            if args.output:
+                _write_json_to_file(args.output, execution)
+                print(args.output)
+            else:
+                _print_json(execution)
+            # Dry-run (no --confirm-execute) is the default and
+            # always returns 0 so the operator can read the plan
+            # preview. A confirmed run that still refuses to execute
+            # (audit_only, budget overflow, lock held) exits 2 so
+            # CI workflows can detect the refusal without parsing
+            # the JSON payload.
+            if args.confirm_execute and not execution.get("executed"):
+                return 2
+            return 0
+
+        if args.command == "completion-verify":
+            report = fund_data.verify_completion_run(
+                before_queue_path=args.before,
+                after_queue_path=args.after,
+                execution_path=args.execution,
+            )
+            if args.output:
+                _write_json_to_file(args.output, report)
+                print(args.output)
+            else:
+                _print_json(report)
             return 0
 
         if args.command == "export":
