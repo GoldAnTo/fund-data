@@ -96,5 +96,7 @@ htmlcov/
 **/data/openclaw_self_audit_queue.json
 **/data/openclaw_self_audit_after.json
 **/data/openclaw_completion_plan.json
+**/data/openclaw_completion_plan_small.json
+**/data/openclaw_verification.json
 **/data/openclaw_active_completion.lock
 **/data/self_audit_queue.json
