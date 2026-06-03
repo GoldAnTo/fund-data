@@ -160,6 +160,8 @@
 - **"`-f` 对 `ossutil cp` 是可选的。"** 不是。没 `-f`，ossutil 在已有 key 上提示 "y or N"；在非交互 shell 里，提示是隐形的，upload 静默 no-op。`cloud upload` subcommand 传 `-f`；subcommand 之外的 `ossutil cp` 手动调用必须也这样。
 - **"Bucket 是私有的。"** Query bundle 在 `fund-data-public-l`，是公开读 bucket。Full archive 发到 `fund-data-private`（或私有 prefix）；把 full archive 发到公共 bucket 是数据泄漏，不是配置错误。
 - **"你可以把 `FUND_DATA_MANIFEST_URL` 指向 `file://` URL。"** 你可以（`_open_location` 处理 `file` scheme），但不是支持的配置。Manifest 期望 HTTPS 可达；`file://` 路径是实现细节可能变。
+- **"`fund_cli cloud build-bundle --base-url https://.../fund-data` 应该 work 吧？"** 不。`--base-url` 参数的语义是"**已经包含** `releases/{version}/` 前缀"，不是只到 bucket prefix。`build_bundle` 内部就 `_join_location(base, QUERY_ARCHIVE_NAME)` 直接拼 gz 文件名，**不会**自己补 `releases/{version}/`。正确用法是 `--base-url "https://.../fund-data/releases/$VER"`。`tests/test_fund_cloud.py:66` 的 fixture `https://example.com/fund-data/releases/2026-06-01/` 是这个语义的契约。**传错 base-url 的症状**：`cloud build-bundle` 写出 manifest `files.query_db.url` 是 `.../fund-data/fund_data_query.sqlite.gz`（少 `releases/$VER/`），远端 OSS release dir 里的 gz 在正确路径，但 manifest 引用错——`cloud pull` 报 404。**正确做法**：build 时给 base-url 带 `releases/$VER/`，或者直接重 build + 重传三件 artifact 修正。
+- **"重 build 一次应该产出相同的 sha256 吧？"** 几乎。`fund_data_query.sqlite` 的 sha256 跨 build 稳定（源 DB 没变），但 **`.gz` 的 sha256 不稳定**——gzip 每次跑在 header 里写 `mtime` 字段，byte 级别输出不同，重 build 一次就得到不同的 `.gz` sha256。修 base-url 之类的 build 参数后必须重传 `.gz`、重传 manifest 三件套对齐 sha256，不能只覆盖 manifest 字段。
 
 ---
 
