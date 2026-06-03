@@ -19,7 +19,7 @@
 | `fund-cli cloud {build-bundle, pull, status, upload, archive-full}` —— OSS 分发 | [`fund-cloud-bundle-pipeline.md`](./fund-cloud-bundle-pipeline.md) | [`fund-cloud-bundle-playbook.md`](./fund-cloud-bundle-playbook.md) |
 | `fund_coverage` / `fund_coverage_report` —— 只读内省层 | [`fund-coverage-pipeline.md`](./fund-coverage-pipeline.md) | [`fund-coverage-playbook.md`](./fund-coverage-playbook.md) |
 | `fund_self_audit` / `fund_health_check` — prioritized self-audit queue | [`fund-self-audit-pipeline.md`](./fund-self-audit-pipeline.md) | [`fund-self-audit-playbook.md`](./fund-self-audit-playbook.md) |
-| `fund_completion_plan` / `fund_completion_run` / `fund_completion_verify` — OpenClaw active fill loop | [`openclaw-active-completion-pipeline.md`](./openclaw-active-completion-pipeline.md) | _(playbook pending — for now see the pipeline doc)_ |
+| `fund_completion_plan` / `fund_completion_run` / `fund_completion_verify` — OpenClaw active fill loop | [`openclaw-active-completion-pipeline.md`](./openclaw-active-completion-pipeline.md) | [`openclaw-active-publish-playbook.md`](./openclaw-active-publish-playbook.md) |
 | `install_skill.py {install, uninstall, status}` —— 把 skill 装到 OpenClaw / Codex / Claude | [`fund-install-pipeline.md`](./fund-install-pipeline.md) | [`fund-install-playbook.md`](./fund-install-playbook.md) |
 
 ## 怎么读这些文档
