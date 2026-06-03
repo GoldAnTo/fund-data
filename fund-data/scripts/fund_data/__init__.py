@@ -156,6 +156,7 @@ from .fetch import (
     fetch_stock_holdings,
     search_funds,
 )
+from .self_audit import build_self_audit_queue, check_fund_health
 from .sync import (
     batch_sync_funds,
     coverage_report,
@@ -245,6 +246,9 @@ __all__ = [
     "coverage_report",
     "coverage_rows",
     "sync_fund",
+    # self-audit
+    "build_self_audit_queue",
+    "check_fund_health",
 ]
 
 
