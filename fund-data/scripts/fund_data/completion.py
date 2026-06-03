@@ -504,6 +504,13 @@ def _execute_batch(batch: dict[str, Any], run_root: Path) -> dict[str, Any]:
     elapsed = time.monotonic() - started_monotonic
     stdout_path.write_text(stdout or "", encoding="utf-8")
     stderr_path.write_text(stderr or "", encoding="utf-8")
+    rows_changed = _rows_changed_from_output(stdout or "")
+    # ``batch-sync`` swallows per-fund provider failures into a
+    # ``failed`` counter and exits 0, so a successful returncode
+    # does not necessarily mean the batch filled any rows. Surface
+    # the partial-failure count to the caller so the failure-rate
+    # budget can react.
+    batch_failed = _batch_failed_count(stdout or "")
     return {
         "batch_id": batch["batch_id"],
         "dataset": batch["dataset"],
@@ -516,22 +523,23 @@ def _execute_batch(batch: dict[str, Any], run_root: Path) -> dict[str, Any]:
         "returncode": returncode,
         "stdout_log": str(stdout_path),
         "stderr_log": str(stderr_path),
-        "rows_changed": _rows_changed_from_output(stdout or ""),
+        "rows_changed": rows_changed,
+        "batch_failed": batch_failed,
     }
 
 
 def _rows_changed_from_output(stdout: str) -> int | None:
     """Try to parse a ``rows_changed`` number from a batch-sync JSON
-    log line. The CLI prints a final ``{"summary": {...}}`` block on
-    success. Returns ``None`` if the output is not parseable.
+    log line. The CLI prints a top-level batch summary with
+    ``ok`` / ``failed`` / per-fund ``rows_changed``. Returns the
+    aggregate ``rows_changed`` so the runner can decide whether the
+    batch actually moved any data, or ``None`` if the output is not
+    parseable.
     """
     if not stdout:
         return None
-    # Find the last JSON object in the output.
     text = stdout.strip()
     if not text.startswith("{"):
-        # batch-sync may print progress lines before the summary.
-        # Look for the last '{' followed by a JSON object.
         idx = text.rfind("{")
         if idx < 0:
             return None
@@ -540,12 +548,45 @@ def _rows_changed_from_output(stdout: str) -> int | None:
         payload = json.loads(text)
     except json.JSONDecodeError:
         return None
-    summary = payload.get("summary") if isinstance(payload, dict) else None
-    if not isinstance(summary, dict):
+    if not isinstance(payload, dict):
         return None
+    # batch-sync prints aggregate counters at the top level.
     for key in ("rows_changed", "rows_inserted", "rows_updated", "inserted", "rows"):
-        if key in summary and isinstance(summary[key], int):
-            return summary[key]
+        if key in payload and isinstance(payload[key], int):
+            return payload[key]
+    summary = payload.get("summary")
+    if isinstance(summary, dict):
+        for key in ("rows_changed", "rows_inserted", "rows_updated", "inserted", "rows"):
+            if key in summary and isinstance(summary[key], int):
+                return summary[key]
+    return None
+
+
+def _batch_failed_count(stdout: str) -> int | None:
+    """Parse the per-batch ``failed`` counter from a batch-sync JSON
+    log. ``batch-sync`` reports its own per-fund ok/failed split even
+    when its return code is zero (it does not raise on per-fund
+    provider failure), so the runner has to look inside the JSON to
+    recognise a partial failure and feed it to the failure-rate
+    budget.
+    """
+    if not stdout:
+        return None
+    text = stdout.strip()
+    if not text.startswith("{"):
+        idx = text.rfind("{")
+        if idx < 0:
+            return None
+        text = text[idx:]
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    failed = payload.get("failed")
+    if isinstance(failed, int):
+        return failed
     return None
 
 
@@ -671,9 +712,22 @@ def run_completion_plan(
             record = _execute_batch(batch, run_root)
             execution["batches"].append(record)
             execution["summary"]["provider_calls"] += len(batch["codes"])
-            if record["returncode"] != 0:
+            # A batch is considered "failed" for the failure-rate
+            # budget when either:
+            #   * the process exited non-zero, or
+            #   * the batch-sync JSON reports ``failed > 0`` even
+            #     though the exit code is 0 (per-fund provider
+            #     failures that batch-sync swallowed).
+            batch_failed_count = int(record.get("batch_failed") or 0)
+            partial_failure = batch_failed_count > 0
+            if record["returncode"] != 0 or partial_failure:
                 failures += 1
                 execution["summary"]["failed_batches"] += 1
+                if partial_failure and record["returncode"] == 0:
+                    record["refusal_note"] = (
+                        f"batch-sync reported {batch_failed_count} per-fund "
+                        f"failure(s); exit 0 but considered failed for budget"
+                    )
             else:
                 execution["summary"]["executed_batches"] += 1
             if record.get("rows_changed"):

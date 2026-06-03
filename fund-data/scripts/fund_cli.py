@@ -427,6 +427,11 @@ def build_parser() -> argparse.ArgumentParser:
     completion_verify.add_argument(
         "--execution", required=True, help="Path to the execution.json report"
     )
+    completion_verify.add_argument(
+        "--run-doctor",
+        action="store_true",
+        help="Shell out to doctor.py --skip-network --quiet and fold the result into the report",
+    )
     completion_verify.add_argument("--output", help="Write the verification report JSON to this file")
 
     coverage_report = subparsers.add_parser(
@@ -869,6 +874,31 @@ def main(argv: list[str] | None = None) -> int:
                 after_queue_path=args.after,
                 execution_path=args.execution,
             )
+            # Optionally shell out to doctor.py to fold the health
+            # check into the report; spec calls for a doctor run
+            # *before* verify, so this is a convenience for CI.
+            if getattr(args, "run_doctor", False):
+                import subprocess
+                doctor_proc = subprocess.run(
+                    [
+                        ".venv-akshare/bin/python",
+                        "fund-data/scripts/doctor.py",
+                        "--skip-network",
+                        "--quiet",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                try:
+                    doctor_payload = json.loads(doctor_proc.stdout)
+                except json.JSONDecodeError:
+                    doctor_payload = {"raw_stdout": doctor_proc.stdout, "returncode": doctor_proc.returncode}
+                report["doctor_ok"] = bool(doctor_payload.get("ok"))
+                report["doctor"] = doctor_payload
+                # A doctor failure flips the publish gate off.
+                if not report["doctor_ok"]:
+                    report["publish_recommended"] = False
             if args.output:
                 _write_json_to_file(args.output, report)
                 print(args.output)
