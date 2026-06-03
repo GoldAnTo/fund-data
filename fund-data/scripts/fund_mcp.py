@@ -18,10 +18,18 @@ from typing import Any
 
 try:
     from . import fund_cloud, fund_data
+    from ._env import load_env
 except ImportError:  # pragma: no cover - exercised by direct script execution
     import fund_cloud
 
     import fund_data
+    from fund_data._env import load_env  # type: ignore[no-redef]
+
+# Same .env bootstrap as the CLI / backfill / doctor entry points
+# — MCP servers are typically launched as separate processes and
+# the operator's shell export is not inherited. See
+# ``fund_data._env`` for the search order.
+load_env()
 
 SERVER_NAME = "fund-data"
 SERVER_VERSION = "0.2.0"

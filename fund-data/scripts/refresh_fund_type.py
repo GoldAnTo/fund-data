@@ -48,6 +48,14 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import fund_data  # noqa: E402
 
+# Pick up `INVESTODAY_API_KEY` / `TUSHARE_TOKEN` from the
+# project-root .env (see ``fund_data._env``). This script only
+# hits Eastmoney, but loading keeps the entry-point contract
+# consistent across the backfill toolkit.
+from fund_data._env import load_env  # noqa: E402
+
+load_env()
+
 logger = logging.getLogger("fund_data.refresh_fund_type")
 
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"

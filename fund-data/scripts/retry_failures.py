@@ -35,6 +35,13 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import fund_data  # noqa: E402
 
+# Pick up `INVESTODAY_API_KEY` from the project-root .env when
+# this script is launched from cron / CI without a shell export.
+# See ``fund_data._env`` for the search order.
+from fund_data._env import load_env  # noqa: E402
+
+load_env()
+
 logger = logging.getLogger("fund_data.retry")
 
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"

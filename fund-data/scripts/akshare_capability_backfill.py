@@ -55,6 +55,14 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import fund_data  # noqa: E402
 
+# Pick up `INVESTODAY_API_KEY` / `TUSHARE_TOKEN` from the
+# project-root .env so paid providers are prepended to the
+# provider chain when the cron / CI runner has no shell export.
+# See ``fund_data._env`` for the search order.
+from fund_data._env import load_env  # noqa: E402
+
+load_env()
+
 logger = logging.getLogger("fund_data.akshare_capability_backfill")
 
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"

@@ -43,6 +43,14 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import fund_data  # noqa: E402
 
+# Pick up `INVESTODAY_API_KEY` / `TUSHARE_TOKEN` from the
+# project-root .env (see ``fund_data._env`` for the search
+# order). Tushare in particular is the recommended
+# fee_structures source once the token is set.
+from fund_data._env import load_env  # noqa: E402
+
+load_env()
+
 logger = logging.getLogger("fund_data.fee_only_backfill")
 
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"

@@ -22,6 +22,15 @@ from _net_compat import apply as _apply_net_compat  # noqa: E402
 
 _apply_net_compat()
 
+# Load `INVESTODAY_API_KEY` / `TUSHARE_TOKEN` / etc. from the
+# project-root `.env` if not already exported in the shell.
+# Stdlib-only, idempotent, no-op when the file is missing.
+# Shell exports still win (loader uses ``os.environ.setdefault``
+# semantics). See ``fund_data._env`` for the search order.
+from fund_data._env import load_env  # noqa: E402
+
+load_env()
+
 
 PROVIDER_CHOICES = ["auto", "eastmoney", "akshare", "investoday", "tushare"]
 

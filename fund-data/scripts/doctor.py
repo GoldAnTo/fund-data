@@ -51,6 +51,16 @@ _apply_net_compat()
 import fund_data  # noqa: E402
 import fund_cloud  # noqa: E402
 
+# Load `INVESTODAY_API_KEY` / `TUSHARE_TOKEN` from the
+# project-root `.env` (see ``fund_data._env``). Doctor is the
+# canonical "did my key load?" check, so this is the most
+# important entry point to wire up — without it the canonical
+# `INVESTODAY_API_KEY` was mis-reported as "not set" even when
+# the file was correct.
+from fund_data._env import load_env  # noqa: E402
+
+load_env()
+
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"
 DEFAULT_VENV = SCRIPT_DIR.parent.parent / ".venv-akshare"
 DEFAULT_BACKFILL_STATE = SCRIPT_DIR.parent / "data" / "backfill_state.json"
@@ -208,15 +218,24 @@ def _check_providers() -> dict[str, object]:
         result["akshare"] = {"ok": True}
     except fund_data.ProviderError as exc:
         result["akshare"] = {"ok": False, "message": str(exc), "degraded_ok": True}
-    # Investoday is opt-in via API key.
-    if os.environ.get("INVESTDATA_API_KEY"):
+    # Investoday is opt-in via API key. ``INVESTODAY_API_KEY`` is
+    # the canonical name (see ``fund-data/PROVIDERS.md`` and the
+    # docstring of ``InvestodayProvider``); ``INVESTDATA_API_KEY``
+    # is the legacy name that the Investoday console export used
+    # to dump. The provider accepts either, so doctor should too —
+    # previously only the legacy name was checked and a freshly
+    # set canonical key was reported as "skipped".
+    if os.environ.get("INVESTODAY_API_KEY") or os.environ.get("INVESTDATA_API_KEY"):
         try:
             fund_data.InvestodayProvider()
             result["investoday"] = {"ok": True}
         except Exception as exc:
             result["investoday"] = {"ok": False, "message": str(exc)}
     else:
-        result["investoday"] = {"ok": True, "skipped": "INVESTDATA_API_KEY not set"}
+        result["investoday"] = {
+            "ok": True,
+            "skipped": "INVESTODAY_API_KEY (or INVESTDATA_API_KEY) not set",
+        }
     return result
 
 

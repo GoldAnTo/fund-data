@@ -41,6 +41,14 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import fund_data  # noqa: E402
 
+# This script is hard-required to have INVESTODAY_API_KEY (the
+# whole point is to call the Investoday /fund/all catalog), so
+# the .env loader is non-optional here. The loader is idempotent
+# and stdlib-only; shell exports still take precedence.
+from fund_data._env import load_env  # noqa: E402
+
+load_env()
+
 logger = logging.getLogger("fund_data.investoday_profile_sync")
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"
 DEFAULT_BATCH_COMMIT = 500

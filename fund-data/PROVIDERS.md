@@ -17,16 +17,47 @@ points make a paid key worth it for a team/data base:
 1. **Apply for a key** at <https://data-api.investoday.net>. The
    free trial (200 calls / 30 days) is enough to validate the
    integration; paid plans start at ¥12.9 / 5,000 calls (3 months).
-2. **Export the key** in your shell profile (or in the OpenClaw /
-   Codex / Claude runtime environment). The canonical name is
-   `INVESTODAY_API_KEY`; the older `INVESTDATA_API_KEY` is still
-   accepted as a fallback for setups that picked it up from the
-   Investoday console.
+2. **Drop the key into the project-root `.env`** (or export
+   it in your shell). The canonical name is
+   `INVESTODAY_API_KEY`; the older `INVESTDATA_API_KEY` is
+   still accepted as a fallback. The entry-point scripts
+   (`fund_cli.py` / `fund_mcp.py` / `backfill.py` /
+   `doctor.py` / ...) call `fund_data._env.load_env` at
+   startup, so a `.env` line is enough — no `export` needed
+   in a fresh shell. `.env` is gitignored (and the project
+   intentionally does not ship an `.env.example` template —
+   see `SECURITY.md` for the rationale). Shell exports
+   always win (`os.environ.setdefault` semantics).
 
    ```bash
+   # .env (recommended — persistent, gitignored)
+   echo 'INVESTODAY_API_KEY=xxxxxxxxxxxxxxxx' > .env
+   chmod 600 .env
+
+   # or, shell (one-off, wins over .env):
    export INVESTODAY_API_KEY=xxxxxxxxxxxxxxxx
-   # or, legacy:
+   # or, legacy name still works:
    export INVESTDATA_API_KEY=xxxxxxxxxxxxxxxx
+   ```
+3. **Verify it loads**:
+
+   ```bash
+   .venv-akshare/bin/python3 scripts/doctor.py
+   ```
+
+   You should see:
+
+   ```json
+   "investoday": {
+     "ok": true,
+     "skipped": "INVESTODAY_API_KEY (or INVESTDATA_API_KEY) not set"
+   }
+   ```
+
+   become:
+
+   ```json
+   "investoday": { "ok": true }
    ```
 3. **Verify it loads**:
 

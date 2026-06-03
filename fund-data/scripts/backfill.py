@@ -49,6 +49,14 @@ _apply_net_compat()
 
 import fund_data  # noqa: E402
 
+# Load `INVESTODAY_API_KEY` / `TUSHARE_TOKEN` from the
+# project-root `.env` so paid providers participate in the
+# provider chain even when the cron / CI runner has no shell
+# export. See ``fund_data._env`` for the search order.
+from fund_data._env import load_env  # noqa: E402
+
+load_env()
+
 logger = logging.getLogger("fund_data.backfill")
 
 # SQLite is a single-writer data base. A concurrent ``batch_sync_funds``

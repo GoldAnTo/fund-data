@@ -56,6 +56,15 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import fund_data  # noqa: E402
 
+# Pick up `INVESTODAY_API_KEY` / `TUSHARE_TOKEN` from the
+# project-root .env (see ``fund_data._env``). The list-missing
+# view does not call paid providers, but loading keeps the
+# script's environment consistent with the rest of the
+# backfill entry points.
+from fund_data._env import load_env  # noqa: E402
+
+load_env()
+
 logger = logging.getLogger("fund_data.backfill_list_missing")
 
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"

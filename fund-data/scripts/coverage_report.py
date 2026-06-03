@@ -50,6 +50,15 @@ _apply_net_compat()
 
 import fund_data  # noqa: E402
 
+# Pick up `INVESTODAY_API_KEY` / `TUSHARE_TOKEN` from the
+# project-root .env (see ``fund_data._env``). The coverage
+# report itself does not call paid providers, but downstream
+# agents reading the JSON do — having the keys loaded
+# consistently keeps the agent contract honest.
+from fund_data._env import load_env  # noqa: E402
+
+load_env()
+
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"
 DEFAULT_MAX_AGE_HOURS = 24.0
 DEFAULT_STALE_LIMIT = 200

@@ -383,3 +383,35 @@ into Codex, Claude Code, and OpenClaw from a single source tree.
   table, and seeds the table when the runner starts on an empty
   checkout. The gitignored DB was the root cause of the first
   "unable to open database file" failure on a clean runner.
+
+## Unreleased
+
+- **`fund_data._env` — stdlib-only `.env` loader.** Adds a
+  20-line helper at `fund_data/_env.py` that reads
+  `INVESTODAY_API_KEY` / `TUSHARE_TOKEN` / etc. from the
+  project-root `.env` at entry-point start. Wire-up added to
+  every entry-point script (`fund_cli.py`, `fund_mcp.py`,
+  `backfill.py`, `doctor.py`, `investoday_profile_sync.py`,
+  `retry_failures.py`, `akshare_capability_backfill.py`,
+  `fee_only_backfill.py`, `coverage_report.py`,
+  `migrate_normalize_report_period.py`,
+  `backfill_list_missing.py`, `fund_profile_backfill.py`,
+  `refresh_fund_type.py`). `os.environ.setdefault` semantics
+  so shell exports / CI secrets always win over the file.
+  Stdlib only (no `python-dotenv` dep). Search order:
+  `$FUND_DATA_ENV_FILE` → `<cwd>/.env` → walk up from
+  `fund_data/_env.py`'s directory. 22 new tests
+  (`tests/test_env.py`) pin the parser, the
+  `setdefault` semantics, the missing-file no-op, and the
+  search order.
+- **`doctor.py` — recognise canonical `INVESTODAY_API_KEY`.**
+  Pre-this-fix `_check_providers` only inspected the legacy
+  `INVESTDATA_API_KEY` and reported
+  `{"ok": true, "skipped": "INVESTDATA_API_KEY not set"}`
+  even when the canonical key was set (the provider itself
+  accepted either name, so the user could not tell whether
+  their key was wrong or just hidden under a different env
+  var). Now both names are checked and the `skipped` message
+  names both. 4 new tests
+  (`tests/test_doctor.py::CheckProvidersInvestodayKeyTests`)
+  pin the canonical/legacy/both/neither paths.

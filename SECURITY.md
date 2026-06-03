@@ -41,8 +41,26 @@ Please include:
 ## Best practices for users of this skill
 
 - Never commit a `TUSHARE_TOKEN` or `INVESTODAY_API_KEY` to the
-  repository. Use environment variables or `.env` files that are
-  themselves gitignored.
+  repository. Use environment variables or the project-root
+  `.env` file (the loader in `fund_data._env` reads it at
+  entry-point start; `.gitignore` keeps it out of git).
+- The canonical token name is **`INVESTODAY_API_KEY`**
+  (documented in `fund-data/PROVIDERS.md`, `SKILL.md`, and
+  `README.md`); the legacy **`INVESTDATA_API_KEY`** is still
+  accepted as a fallback. As of 2026-06-03, `doctor.py`
+  recognises both and a freshly configured canonical key is
+  no longer mis-reported as "not set" — see commit history
+  for the regression test.
+- Shell exports win over the file. `fund_data._env.load_env`
+  uses `os.environ.setdefault` semantics, so a CI runner /
+  `direnv` / `export INVESTODAY_API_KEY=...` always takes
+  precedence over the local `.env` fallback.
+- The project intentionally does not ship an `.env.example`
+  template (`.gitignore` blocks `.env*` without an allowlist).
+  The rationale: any template that lands in the repo is one
+  copy-paste away from leaking a real key. Operators who need
+  a checklist find the schema in `fund-data/PROVIDERS.md` /
+  `SKILL.md` / `README.md`.
 - The SQLite database is **gitignored** for a reason — it can
   contain raw upstream responses that may include the IP of the
   calling machine in HTTP headers. Treat `data/fund_data.sqlite`

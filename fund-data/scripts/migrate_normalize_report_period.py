@@ -58,6 +58,14 @@ _apply_net_compat()
 
 import fund_data  # noqa: E402
 
+# Pick up `INVESTODAY_API_KEY` / `TUSHARE_TOKEN` from the
+# project-root .env (see ``fund_data._env``). The migration
+# itself does not call providers, but loading the keys keeps
+# the script consistent with the rest of the entry points.
+from fund_data._env import load_env  # noqa: E402
+
+load_env()
+
 logger = logging.getLogger("fund_data.migrate_normalize_report_period")
 
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"

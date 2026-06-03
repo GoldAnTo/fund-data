@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -561,6 +562,90 @@ class MainOutputSchemaTests(unittest.TestCase):
             self.assertEqual(out.getvalue(), "")
             written = json.loads(out_path.read_text(encoding="utf-8"))
             self.assertEqual(set(written.keys()), self.EXPECTED_TOP_LEVEL_KEYS_NO_NETWORK)
+
+
+class CheckProvidersInvestodayKeyTests(unittest.TestCase):
+    """Regression for the Investoday env-var detection bug.
+
+    Pre-2026-06-03 ``_check_providers`` only inspected the
+    legacy ``INVESTDATA_API_KEY`` and reported
+    ``{"ok": true, "skipped": "INVESTDATA_API_KEY not set"}``
+    when the canonical ``INVESTODAY_API_KEY`` was set. The
+    provider itself accepted either name (see
+    ``InvestodayProvider.__init__``), so a freshly-configured
+    ``.env`` was silently mis-reported as unconfigured and
+    the operator could not tell whether their key was wrong
+    or just hidden under a different env-var name.
+    """
+
+    def setUp(self) -> None:
+        self._saved = {
+            k: os.environ.get(k)
+            for k in ("INVESTODAY_API_KEY", "INVESTDATA_API_KEY")
+        }
+        for k in self._saved:
+            os.environ.pop(k, None)
+
+    def tearDown(self) -> None:
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_canonical_investoday_api_key_recognised(self) -> None:
+        # The canonical name (the one PROVIDERS.md /
+        # SKILL.md / README.md / the loader write) must
+        # land on the "ok" branch, not the "skipped"
+        # branch.
+        os.environ["INVESTODAY_API_KEY"] = "canonical-test-key"
+        # Patch the symbol the way ``doctor._check_providers``
+        # actually looks it up — via ``scripts.doctor.fund_data``
+        # (the top-level package, not the ``scripts.fund_data``
+        # subpackage that this test imports directly). The two
+        # are distinct module objects because ``doctor.py`` does
+        # ``sys.path.insert(0, SCRIPT_DIR)`` and then
+        # ``import fund_data``, so the dotted path matters.
+        with patch("scripts.doctor.fund_data.InvestodayProvider") as provider:
+            result = doctor._check_providers()
+        self.assertNotIn("skipped", result["investoday"])
+        self.assertTrue(result["investoday"]["ok"])
+        provider.assert_called_once()
+
+    def test_legacy_investdata_api_key_still_works(self) -> None:
+        # Backwards compatibility: the legacy export name
+        # the Investoday console used to emit must still
+        # land on the "ok" branch.
+        os.environ["INVESTDATA_API_KEY"] = "legacy-test-key"
+        with patch("scripts.doctor.fund_data.InvestodayProvider") as provider:
+            result = doctor._check_providers()
+        self.assertNotIn("skipped", result["investoday"])
+        self.assertTrue(result["investoday"]["ok"])
+        provider.assert_called_once()
+
+    def test_neither_set_reports_skipped(self) -> None:
+        # The negative path: both env vars unset -> the
+        # loader-flavoured "skipped" payload so an agent
+        # reading the JSON can tell the difference between
+        # "doctor ran fine, key not configured" and "doctor
+        # ran fine, key configured, provider up".
+        result = doctor._check_providers()
+        self.assertTrue(result["investoday"]["ok"])
+        self.assertIn("skipped", result["investoday"])
+        self.assertIn("INVESTODAY_API_KEY", result["investoday"]["skipped"])
+
+    def test_canonical_key_takes_precedence_when_both_set(self) -> None:
+        # When both are set, the provider is constructed
+        # with the canonical one (the provider's own
+        # ``__init__`` reads canonical first). Doctor only
+        # needs to confirm *some* key is present.
+        os.environ["INVESTODAY_API_KEY"] = "canonical"
+        os.environ["INVESTDATA_API_KEY"] = "legacy"
+        with patch("scripts.doctor.fund_data.InvestodayProvider") as provider:
+            result = doctor._check_providers()
+        self.assertTrue(result["investoday"]["ok"])
+        self.assertNotIn("skipped", result["investoday"])
+        provider.assert_called_once()
 
 
 if __name__ == "__main__":
