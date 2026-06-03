@@ -79,7 +79,7 @@ def build_providers_full(
     names: list[str]
     if provider == PROVIDER_AUTO:
         names = []
-        if os.environ.get("INVESTDATA_API_KEY"):
+        if os.environ.get("INVESTODAY_API_KEY") or os.environ.get("INVESTDATA_API_KEY"):
             names.append(PROVIDER_INVESTODAY)
         if os.environ.get("TUSHARE_TOKEN"):
             names.append(PROVIDER_TUSHARE)
@@ -123,5 +123,4 @@ def build_providers_full(
     if not providers:
         raise ProviderError(f"no providers available for {capability or 'request'}")
     return providers, init_warnings
-
 

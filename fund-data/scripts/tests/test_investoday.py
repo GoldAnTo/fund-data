@@ -54,13 +54,18 @@ class FakeInvestoday(fund_data.InvestodayProvider):
     and skips ``__init__`` (which would otherwise require a real key).
     """
 
-    def __init__(self, get_json_responses: list | None = None) -> None:
+    def __init__(
+        self,
+        get_json_responses: list | None = None,
+        post_json_responses: list | None = None,
+    ) -> None:
         self.api_key = "test"
         self.base_url = "https://example.test"
         self._catalog_cache = None
         self._catalog_cache_ts = 0.0
         self._catalog_cache_ttl = 3600.0
         self._get_json = MagicMock(side_effect=get_json_responses or [])
+        self._post_json = MagicMock(side_effect=post_json_responses or [])
 
 
 class EnvVarFallbackTests(unittest.TestCase):
@@ -191,6 +196,84 @@ class ProfileTests(unittest.TestCase):
         provider.fund_list()  # warm the cache
         provider.profile("110022")  # should not call _get_json again
         self.assertEqual(provider._get_json.call_count, 1)
+
+
+class NavHistoryTests(unittest.TestCase):
+    def test_nav_history_posts_and_maps_live_investoday_fields(self) -> None:
+        provider = FakeInvestoday(
+            post_json_responses=[
+                {
+                    "code": 0,
+                    "message": "success",
+                    "totalCount": 1,
+                    "data": [
+                        {
+                            "fundCode": "110022",
+                            "date": "2023-12-29",
+                            "nav": 3.199,
+                            "navAcc": 3.199,
+                        },
+                        {
+                            "fundCode": "110022",
+                            "date": "2024-01-02",
+                            "nav": 3.211,
+                            "navAcc": 3.211,
+                        }
+                    ],
+                }
+            ]
+        )
+        rows = provider.nav_history("110022", start_date="2024-01-01", end_date="2024-01-10")
+        self.assertEqual(provider._post_json.call_count, 1)
+        self.assertEqual(provider._post_json.call_args.args[0], "/fund/nav/history")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["nav_date"], "2024-01-02")
+        self.assertEqual(rows[0]["unit_nav"], 3.211)
+        self.assertEqual(rows[0]["accumulated_nav"], 3.211)
+        self.assertEqual(rows[0]["source"], "investoday.fund_nav_history")
+
+
+class StockHoldingsTests(unittest.TestCase):
+    def test_stock_holdings_posts_and_maps_live_investoday_fields(self) -> None:
+        provider = FakeInvestoday(
+            post_json_responses=[
+                {
+                    "code": 0,
+                    "message": "success",
+                    "totalCount": 1,
+                    "data": [
+                        {
+                            "fundCode": "110022",
+                            "date": "2026-04-22",
+                            "stockCode": "000333",
+                            "stockName": "美的集团",
+                            "navRatio": 9.64,
+                            "holdingShares": 1600,
+                            "marketValue": 1220000,
+                        },
+                        {
+                            "fundCode": "110022",
+                            "date": "2024-12-31",
+                            "stockCode": "600519",
+                            "stockName": "贵州茅台",
+                            "navRatio": 7.5,
+                            "holdingShares": 1000,
+                            "marketValue": 1500000,
+                        }
+                    ],
+                }
+            ]
+        )
+        rows = provider.stock_holdings("110022", report_year="2024")
+        self.assertEqual(provider._post_json.call_count, 1)
+        self.assertEqual(provider._post_json.call_args.args[0], "/fund/portfolio-stock-holdings")
+        self.assertEqual(rows[0]["report_period"], "2024-12-31")
+        self.assertEqual(rows[0]["stock_code"], "600519")
+        self.assertEqual(rows[0]["stock_name"], "贵州茅台")
+        self.assertEqual(rows[0]["net_value_ratio"], 0.075)
+        self.assertEqual(rows[0]["shares"], 1000)
+        self.assertEqual(rows[0]["market_value"], 1500000)
+        self.assertEqual(rows[0]["source"], "investoday.fund_portfolio_stock_holdings")
 
 
 if __name__ == "__main__":

@@ -100,6 +100,27 @@ class BuildProvidersCapabilityMatrixTests(unittest.TestCase):
         names = [p.name for p in chain]
         self.assertIn("eastmoney", names)
 
+    def test_auto_prepends_investoday_when_canonical_key_is_set(self) -> None:
+        # ``INVESTODAY_API_KEY`` is the canonical documented name.
+        # The legacy ``INVESTDATA_API_KEY`` must not be required for
+        # auto mode to try Investoday first.
+        saved = {
+            "INVESTODAY_API_KEY": os.environ.get("INVESTODAY_API_KEY"),
+            "INVESTDATA_API_KEY": os.environ.get("INVESTDATA_API_KEY"),
+        }
+        try:
+            os.environ["INVESTODAY_API_KEY"] = "canonical-test-key"
+            os.environ.pop("INVESTDATA_API_KEY", None)
+            chain = providers.build_providers("auto", capability="profile")
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        names = [p.name for p in chain]
+        self.assertEqual(names[0], "investoday")
+
     def test_explicit_unknown_provider_raises(self) -> None:
         # An unknown provider id is a hard error, not a
         # silent fallback. The chain builder raises

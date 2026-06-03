@@ -84,7 +84,7 @@ python3 scripts/fund_cli.py profile 110022 --provider akshare
 python3 scripts/fund_cli.py profile 110022 --provider tushare
 ```
 
-`auto` tries `investoday` first when `INVESTDATA_API_KEY` is set. Without a key, search/NAV use Eastmoney first and fall back to AkShare if installed. Holdings, profile, industry, fee, dividend/split, and manager commands use AkShare-backed free sources until a structured provider is configured.
+`auto` tries `investoday` first when `INVESTODAY_API_KEY` (or the legacy `INVESTDATA_API_KEY`) is set. Without a key, search/NAV use Eastmoney first and fall back to AkShare if installed. Holdings, profile, industry, fee, dividend/split, and manager commands use AkShare-backed free sources until a structured provider is configured.
 
 AkShare is optional. Install it into the Python environment used to run the CLI:
 
@@ -174,7 +174,7 @@ Read `references/schema.md` when a task needs table names, field meanings, or do
 |---|---|---|
 | `akshare is not installed; run python3 -m pip install akshare` | CLI run with system Python; AkShare lives in `.venv-akshare` | `python3 scripts/install_skill.py status` then re-run via the venv python it reports |
 | `ProviderError: TUSHARE_TOKEN is not set` | Tushare selected by auto chain but no token | `export TUSHARE_TOKEN=...` or pass `--provider eastmoney` to skip it |
-| `ProviderError: INVESTDATA_API_KEY is not set` | Same, for Investoday | `export INVESTDATA_API_KEY=...` or pick another provider |
+| `ProviderError: INVESTODAY_API_KEY (or INVESTDATA_API_KEY) is not set` | Same, for Investoday | `export INVESTODAY_API_KEY=...` or pick another provider |
 | 38+ rows in `sync_failures` after a long backfill | AkShare or Eastmoney rate-limited mid-run | `python3 scripts/retry_failures.py --provider eastmoney --limit 50` to drain the queue once the window opens; `--dry-run` to preview |
 | `dataset_errors` full of `no attribute` for `profile` / `bonds` / etc. | `--provider eastmoney` was forced but those capabilities need AkShare or Tushare | Drop `--provider` to let auto pick, or use `--provider tushare` / `--provider akshare` |
 | `backfill.py` exit code 1 inside CI | `data/` directory does not exist on a fresh runner (gitignored) | The nightly workflow seeds it; for ad-hoc local runs, run `python3 scripts/fund_cli.py list` first |

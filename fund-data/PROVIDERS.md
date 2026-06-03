@@ -59,26 +59,6 @@ points make a paid key worth it for a team/data base:
    ```json
    "investoday": { "ok": true }
    ```
-3. **Verify it loads**:
-
-   ```bash
-   .venv-akshare/bin/python3 scripts/doctor.py
-   ```
-
-   You should see:
-
-   ```json
-   "investoday": {
-     "ok": true,
-     "skipped": "INVESTODAY_API_KEY not set"
-   }
-   ```
-
-   become:
-
-   ```json
-   "investoday": { "ok": true }
-   ```
 4. **Rerun a backfill** — Investoday is automatically added to the
    provider chain in `auto` mode:
 
@@ -90,20 +70,17 @@ points make a paid key worth it for a team/data base:
 
 Investoday's data plane is tiered (L1 基础 → L5 AI 特色). The
 **¥12.9 体验包 advertises "all API permissions"** but in practice
-the key only opens the L1 surface until you upgrade. Concretely,
-on the 体验包 we have observed:
+the key may only open the L1 surface until you upgrade. Concretely,
+the current project smoke test on 2026-06-03 observed:
 
 | Endpoint family | 体验包 (¥12.9) | Notes |
 |---|---|---|
 | `/fund/all` (L1 — 27k-fund catalog with 31 profile fields) | ✅ | The killer feature — full profile per fund in one call. |
-| `/fund/nav/history` (L1) | ⚠️ may be disabled | Falls back to Eastmoney; no data loss. |
-| `/fund/portfolio-stock-holdings` (L2) | ❌ 40001 `无效的接口` | Falls back to AkShare. |
-| `/fund/portfolio-bond-holdings` (L2) | ❌ | Falls back to AkShare. |
-| `/fund/portfolio-industry` (L2) | ❌ | Falls back to AkShare. |
-| `/fund/portfolio-manager` (L2) | ❌ | Falls back to AkShare. |
-| `/fund/fee` (L2) | ❌ | Falls back to AkShare. |
-| `/fund/dividend` (L2) | ❌ | Falls back to AkShare. |
-| `/fund/split` (L2) | ❌ | Falls back to AkShare. |
+| `/fund/nav/history` (L1) | ✅ | Requires POST. The provider locally enforces `start_date` / `end_date` because the API may return adjacent rows in the page. |
+| `/fund/portfolio-stock-holdings` (L1) | ✅ latest holdings | Requires POST. The API currently returns the latest disclosed holdings and ignores report-year/date filters, so the provider locally filters `report_year` and falls back when no year match exists. |
+| `/fund/portfolio-bond-holdings` (L1) | not re-smoked | Falls back to AkShare if no rows are returned. |
+| `/fund/portfolio-industry` / forward industry allocation | not available as a direct forward endpoint | Falls back to AkShare. |
+| `/fund/fee` / `/fund/dividend` / `/funds/share-splits` | not wired in `InvestodayProvider` yet | Falls back to AkShare. |
 
 If your key returns `code: 40001` / `无效的接口` from a portfolio
 endpoint, ask Investoday support to enable the L2 portfolio-* set
@@ -134,12 +111,12 @@ matches the workload:
 
 | Capability | Order (first try → last try) |
 |---|---|
-| `fund_list`, `search`, `nav_history`, `snapshot` | Eastmoney → AkShare |
-| `profile`, `holdings`, `bonds`, `industries`, `fees`, `dividends`, `splits`, `managers` | AkShare → Eastmoney (Tushare/Investoday inserted first if their keys are present) |
+| `fund_list`, `search`, `nav_history`, `snapshot` | Investoday/Tushare if keyed → Eastmoney → AkShare |
+| `profile`, `holdings`, `bonds`, `industries`, `fees`, `dividends`, `splits`, `managers` | Investoday/Tushare if keyed → AkShare → Eastmoney |
 
-When you set `INVESTDATA_API_KEY`, Investoday is **always** tried
-first because it is the highest-trust source. The free providers
-remain as fallbacks. When you set `TUSHARE_TOKEN`, Tushare is
+When you set `INVESTODAY_API_KEY` (or legacy `INVESTDATA_API_KEY`),
+Investoday is **always** tried first because it is the highest-trust
+source. The free providers remain as fallbacks. When you set `TUSHARE_TOKEN`, Tushare is
 tried first for the AkShare-only capabilities (profile/holdings/...)
 because Tushare has cleaner JSON than the AkShare wrappers.
 

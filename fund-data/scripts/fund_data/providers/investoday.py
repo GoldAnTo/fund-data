@@ -208,7 +208,7 @@ class InvestodayProvider:
         per: int = 20,
     ) -> list[dict[str, Any]]:
         records = normalizers._extract_payload_records(
-            self._get_json(
+            self._post_json(
                 "/fund/nav/history",
                 {
                     "fundCode": normalizers.normalize_fund_code(code),
@@ -223,12 +223,17 @@ class InvestodayProvider:
         rows = []
         for item in records:
             nav_date = str(normalizers._first_value(item, "navDate", "date", "tradeDate", "净值日期") or "")
+            nav_day = nav_date[:10]
+            if start_date and (not nav_day or nav_day < start_date):
+                continue
+            if end_date and (not nav_day or nav_day > end_date):
+                continue
             rows.append(
                 {
                     "nav_date": nav_date,
                     "unit_nav": normalizers._to_float(normalizers._first_value(item, "unitNav", "nav", "单位净值")),
                     "accumulated_nav": normalizers._to_float(
-                        normalizers._first_value(item, "accumulatedNav", "accNav", "累计净值")
+                        normalizers._first_value(item, "accumulatedNav", "accNav", "navAcc", "累计净值")
                     ),
                     "daily_growth_rate": normalizers._to_float(
                         normalizers._first_value(item, "dailyGrowthRate", "dailyReturn", "日增长率"),
@@ -249,12 +254,14 @@ class InvestodayProvider:
 
     def stock_holdings(self, code: str, *, report_year: str | None = None) -> list[dict[str, Any]]:
         records = normalizers._extract_payload_records(
-            self._get_json(
+            self._post_json(
                 "/fund/portfolio-stock-holdings",
                 {
                     "fundCode": normalizers.normalize_fund_code(code),
                     "code": normalizers.normalize_fund_code(code),
                     "reportYear": report_year or "",
+                    "pageNum": 1,
+                    "pageSize": 500,
                 },
             )
         )
@@ -264,21 +271,23 @@ class InvestodayProvider:
             stock_name = normalizers._first_value(item, "stockName", "stock_name", "股票名称")
             if not stock_code or not stock_name:
                 continue
+            report_period = str(
+                normalizers._first_value(item, "reportPeriod", "quarter", "reportDate", "date", "季度")
+                or report_year
+                or ""
+            )
+            if report_year and not report_period.startswith(str(report_year)):
+                continue
             rows.append(
                 {
-                    "report_period": str(
-                        normalizers._first_value(item, "reportPeriod", "quarter", "reportDate", "季度")
-                        or report_year
-                        or ""
-                    ),
+                    "report_period": report_period,
                     "stock_code": str(stock_code).zfill(6),
                     "stock_name": str(stock_name),
                     "net_value_ratio": normalizers._to_float(
-                        normalizers._first_value(item, "netValueRatio", "holdingRatio", "占净值比例"),
-                        percent="%"
-                        in str(
-                            normalizers._first_value(item, "netValueRatio", "holdingRatio", "占净值比例") or ""
+                        normalizers._first_value(
+                            item, "netValueRatio", "holdingRatio", "navRatio", "占净值比例"
                         ),
+                        percent=True,
                     ),
                     "shares": normalizers._to_float(normalizers._first_value(item, "shares", "holdingShares", "持股数")),
                     "market_value": normalizers._to_float(
@@ -333,5 +342,3 @@ class InvestodayProvider:
         # Return empty so the provider chain falls through to AkShare,
         # which has the forward call but is currently broken upstream.
         return []
-
-

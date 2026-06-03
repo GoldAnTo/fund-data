@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -202,6 +203,10 @@ class FundDataProviderTests(unittest.TestCase):
         wondering why the chain returned empty results."""
 
         original_akshare_init = fund_data.AkshareProvider.__init__
+        saved_investoday_env = {
+            key: os.environ.pop(key, None)
+            for key in ("INVESTODAY_API_KEY", "INVESTDATA_API_KEY")
+        }
         fund_data.AkshareProvider.__init__ = lambda self: (_ for _ in ()).throw(
             fund_data.ProviderError("akshare is not installed for test")
         )
@@ -211,6 +216,11 @@ class FundDataProviderTests(unittest.TestCase):
                 providers = fund_data.build_providers("auto", capability="profile")
         finally:
             fund_data.AkshareProvider.__init__ = original_akshare_init
+            for key, value in saved_investoday_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
         # The remaining provider (Eastmoney) must still be returned so the
         # caller can keep working with whatever is available.
@@ -629,6 +639,9 @@ class FundDataProviderTests(unittest.TestCase):
                             }
                         ]
                     }
+                raise AssertionError(path)
+
+            def _post_json(self, path, params):
                 if path == "/fund/nav/history":
                     return {
                         "data": [
@@ -647,7 +660,7 @@ class FundDataProviderTests(unittest.TestCase):
                                 "reportPeriod": "2024Q4",
                                 "stockCode": "600519",
                                 "stockName": "贵州茅台",
-                                "netValueRatio": 0.0983,
+                                "netValueRatio": 9.83,
                                 "shares": 12.34,
                                 "marketValue": 56789.0,
                             }
@@ -747,6 +760,30 @@ class FundDataStoreTests(unittest.TestCase):
             self.assertEqual(nav_count, 2)
             self.assertEqual(raw_count, 1)
             self.assertEqual(json.loads(stock_codes_json), ["1.600519", "0.000333"])
+
+    def test_fetch_nav_history_reads_fresh_local_rows_before_provider_chain(self):
+        class ProviderShouldNotRun:
+            name = "network"
+
+            def nav_history(self, code, **kwargs):
+                raise AssertionError("provider chain should not run on a fresh local NAV hit")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            store = fund_data.FundDataStore(db_path)
+            store.upsert_nav_history("110022", fund_data.parse_nav_history(NAV_PAYLOAD))
+
+            with patch.object(fund_data, "build_providers", return_value=[ProviderShouldNotRun()]):
+                rows = fund_data.fetch_nav_history(
+                    "110022",
+                    start_date="2024-01-30",
+                    end_date="2024-01-31",
+                    per=2,
+                    db_path=db_path,
+                )
+
+            self.assertEqual([row["nav_date"] for row in rows], ["2024-01-31", "2024-01-30"])
+            self.assertNotIn("fetched_at", rows[0])
 
     def test_store_upserts_stock_holdings(self):
         with tempfile.TemporaryDirectory() as tmpdir:

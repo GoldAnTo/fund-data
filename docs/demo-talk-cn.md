@@ -29,7 +29,7 @@
 | 基金池 | 26,953 只 |
 | 同步失败队列 | 0 |
 | AkShare | 已在 `.venv-akshare` 中安装 1.18.64；系统 Python 下未安装时为 degraded ok |
-| Investoday | 未设置 `INVESTDATA_API_KEY` 时跳过付费源，属于预期状态 |
+| Investoday | 未设置 `INVESTODAY_API_KEY`（或旧名 `INVESTDATA_API_KEY`）时跳过付费源，属于预期状态 |
 
 注意：如果 `cloud status --manifest-url ...` 显示
 `update_available: true`，说明远端 manifest 有新版本。演示时可以先执行
