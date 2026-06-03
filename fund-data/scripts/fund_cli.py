@@ -44,6 +44,55 @@ def _print_json(value) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
+def _add_json_arg(parser: argparse.ArgumentParser) -> None:
+    """Add the ``--json`` flag that every per-fund read
+    command shares.
+
+    Contract: per-fund read commands (search / list / nav /
+    snapshot / holdings / profile / bonds / industries / fees /
+    dividends / splits / managers / coverage / coverage-report
+    / export / cloud-status) ALWAYS emit a single JSON
+    document on stdout -- the flag only chooses between
+    indented (default, human-readable) and compact
+    (single-line, agent-friendly / ``jq``-friendly). The
+    contract is the same either way; ``--json`` is for
+    pipelines that want to skip the whitespace and trust the
+    parse.
+
+    Errors always go to stderr regardless of the flag, and
+    the exit code mirrors the success flag (``0`` for
+    success, ``1`` for a data-plane error, ``2`` for an
+    argparse / config error). The wrapper at the bottom of
+    this file centralizes the exit code logic so the per-command
+    handlers don't have to think about it.
+    """
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Emit compact single-line JSON (no indent). Default is "
+            "indented JSON for human readability. Either way the "
+            "output is a single JSON document on stdout; errors go "
+            "to stderr; exit code is 0 / 1 / 2 for success / data "
+            "error / argparse error."
+        ),
+    )
+
+
+def _emit(value, args) -> None:
+    """Write ``value`` as JSON to stdout, respecting ``--json``.
+
+    See :func:`_add_json_arg` for the full contract. The two
+    modes differ only in whitespace; both are valid JSON and
+    both round-trip through ``json.loads``. The compact mode
+    is what agents pipe to ``jq`` / parse with the standard
+    library; the indented mode is what humans eyeball.
+    """
+    indent = None if getattr(args, "json", False) else 2
+    sys.stdout.write(json.dumps(value, ensure_ascii=False, indent=indent))
+    sys.stdout.write("\n")
+
+
 def _write_json_to_file(path: str, value) -> None:
     """Write a JSON payload to ``path``, creating parent directories
     on demand. Used by subcommands that want a structured
@@ -143,6 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_db_arg(list_parser)
     _add_offline_arg(list_parser)
     _add_provider_arg(list_parser)
+    _add_json_arg(list_parser)
 
     search = subparsers.add_parser("search", help="Search funds by keyword or code")
     search.add_argument("keyword")
@@ -150,6 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_db_arg(search)
     _add_offline_arg(search)
     _add_provider_arg(search)
+    _add_json_arg(search)
 
     nav = subparsers.add_parser("nav", help="Fetch historical NAV rows")
     nav.add_argument("code")
@@ -165,56 +216,68 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_db_arg(nav)
     _add_offline_arg(nav)
     _add_provider_arg(nav)
+    _add_json_arg(nav)
 
     snapshot = subparsers.add_parser("snapshot", help="Fetch fund snapshot metadata")
     snapshot.add_argument("code")
     _add_common_db_arg(snapshot)
     _add_offline_arg(snapshot)
     _add_provider_arg(snapshot)
+    _add_json_arg(snapshot)
 
     holdings = subparsers.add_parser("holdings", help="Fetch fund stock holdings")
     holdings.add_argument("code")
     holdings.add_argument("--report-year")
     _add_common_db_arg(holdings)
     _add_provider_arg(holdings)
+    _add_json_arg(holdings)
 
     profile = subparsers.add_parser("profile", help="Fetch fund profile/basic archive data")
     profile.add_argument("code")
     _add_common_db_arg(profile)
     _add_provider_arg(profile)
+    _add_json_arg(profile)
 
     bonds = subparsers.add_parser("bonds", help="Fetch fund bond holdings")
     bonds.add_argument("code")
     bonds.add_argument("--report-year")
     _add_common_db_arg(bonds)
     _add_provider_arg(bonds)
+    _add_json_arg(bonds)
 
     industries = subparsers.add_parser("industries", help="Fetch fund industry allocations")
     industries.add_argument("code")
     industries.add_argument("--report-year")
     _add_common_db_arg(industries)
     _add_provider_arg(industries)
+    _add_json_arg(industries)
 
     fees = subparsers.add_parser("fees", help="Fetch fund fee structures")
     fees.add_argument("code")
-    fees.add_argument("--indicator", action="append")
+    fees.add_argument(
+        "--indicator", action="append", help="Filter by fee indicator (repeatable)"
+    )
     _add_common_db_arg(fees)
     _add_provider_arg(fees)
+    _add_json_arg(fees)
 
     dividends = subparsers.add_parser("dividends", help="Fetch fund dividends")
     dividends.add_argument("code")
     _add_common_db_arg(dividends)
     _add_provider_arg(dividends)
+    _add_json_arg(dividends)
 
     splits = subparsers.add_parser("splits", help="Fetch fund share splits")
     splits.add_argument("code")
     _add_common_db_arg(splits)
     _add_provider_arg(splits)
+    _add_json_arg(splits)
 
     managers = subparsers.add_parser("managers", help="Fetch fund manager records")
-    managers.add_argument("--code")
+    managers.add_argument("code", nargs="?")
     _add_common_db_arg(managers)
     _add_provider_arg(managers)
+    _add_json_arg(managers)
 
     sync = subparsers.add_parser(
         "sync", help="Fetch snapshot, NAV, and optional fund base datasets in one run"
@@ -276,6 +339,7 @@ def build_parser() -> argparse.ArgumentParser:
     coverage = subparsers.add_parser("coverage", help="Show local data coverage by fund")
     coverage.add_argument("--fund-code")
     _add_common_db_arg(coverage)
+    _add_json_arg(coverage)
 
     doctor = subparsers.add_parser(
         "doctor",
@@ -338,6 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write to this file instead of stdout (extension drives format if --format is omitted)",
     )
     _add_common_db_arg(coverage_report)
+    _add_json_arg(coverage_report)
 
     export = subparsers.add_parser("export", help="Export a persisted table")
     export.add_argument(
@@ -363,6 +428,7 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--format", choices=["json", "csv"], default="json")
     export.add_argument("--output")
     _add_common_db_arg(export)
+    _add_json_arg(export)
 
     cloud = subparsers.add_parser("cloud", help="Build, pull, and inspect cloud data bundles")
     cloud_subparsers = cloud.add_subparsers(dest="cloud_command", required=True)
@@ -511,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
                 raw_text=_read_offline_raw(args.offline_raw),
                 provider=args.provider,
             )
-            _print_json(rows[: args.limit])
+            _emit(rows[: args.limit], args)
             return 0
 
         if args.command == "search":
@@ -521,7 +587,7 @@ def main(argv: list[str] | None = None) -> int:
                 raw_text=_read_offline_raw(args.offline_raw),
                 provider=args.provider,
             )
-            _print_json(rows[: args.limit])
+            _emit(rows[: args.limit], args)
             return 0
 
         if args.command == "nav":
@@ -536,17 +602,14 @@ def main(argv: list[str] | None = None) -> int:
                 provider=args.provider,
                 cache=not args.refresh,
             )
-            _print_json(rows)
+            _emit(rows, args)
             return 0
 
         if args.command == "snapshot":
             snapshot = fund_data.fetch_snapshot(
-                args.code,
-                db_path=args.db,
-                raw_text=_read_offline_raw(args.offline_raw),
-                provider=args.provider,
+                args.code, db_path=args.db, provider=args.provider
             )
-            _print_json(snapshot)
+            _emit(snapshot, args)
             return 0
 
         if args.command == "holdings":
@@ -556,16 +619,14 @@ def main(argv: list[str] | None = None) -> int:
                 db_path=args.db,
                 provider=args.provider,
             )
-            _print_json(rows)
+            _emit(rows, args)
             return 0
 
         if args.command == "profile":
             profile = fund_data.fetch_profile(
-                args.code,
-                db_path=args.db,
-                provider=args.provider,
+                args.code, db_path=args.db, provider=args.provider
             )
-            _print_json(profile)
+            _emit(profile, args)
             return 0
 
         if args.command == "bonds":
@@ -575,7 +636,7 @@ def main(argv: list[str] | None = None) -> int:
                 db_path=args.db,
                 provider=args.provider,
             )
-            _print_json(rows)
+            _emit(rows, args)
             return 0
 
         if args.command == "industries":
@@ -585,7 +646,7 @@ def main(argv: list[str] | None = None) -> int:
                 db_path=args.db,
                 provider=args.provider,
             )
-            _print_json(rows)
+            _emit(rows, args)
             return 0
 
         if args.command == "fees":
@@ -595,34 +656,28 @@ def main(argv: list[str] | None = None) -> int:
                 db_path=args.db,
                 provider=args.provider,
             )
-            _print_json(rows)
+            _emit(rows, args)
             return 0
 
         if args.command == "dividends":
             rows = fund_data.fetch_dividends(
-                args.code,
-                db_path=args.db,
-                provider=args.provider,
+                args.code, db_path=args.db, provider=args.provider
             )
-            _print_json(rows)
+            _emit(rows, args)
             return 0
 
         if args.command == "splits":
             rows = fund_data.fetch_splits(
-                args.code,
-                db_path=args.db,
-                provider=args.provider,
+                args.code, db_path=args.db, provider=args.provider
             )
-            _print_json(rows)
+            _emit(rows, args)
             return 0
 
         if args.command == "managers":
             rows = fund_data.fetch_fund_managers(
-                args.code,
-                db_path=args.db,
-                provider=args.provider,
+                args.code, db_path=args.db, provider=args.provider
             )
-            _print_json(rows)
+            _emit(rows, args)
             return 0
 
         if args.command == "sync":
@@ -645,7 +700,7 @@ def main(argv: list[str] | None = None) -> int:
                 report_year=args.report_year,
                 fee_indicators=args.fee_indicator,
             )
-            _print_json(result)
+            _emit(result, args)
             return 0
 
         if args.command == "batch-sync":
@@ -679,7 +734,7 @@ def main(argv: list[str] | None = None) -> int:
                 concurrency=args.concurrency,
                 min_interval_seconds=args.min_interval_seconds,
             )
-            _print_json(result)
+            _emit(result, args)
             return 0
 
         if args.command == "export":
@@ -693,7 +748,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "coverage":
             rows = fund_data.coverage_rows(db_path=args.db, fund_code=args.fund_code)
-            _print_json(rows)
+            _emit(rows, args)
             return 0
 
         if args.command == "doctor":
@@ -748,7 +803,7 @@ def main(argv: list[str] | None = None) -> int:
                     text = str(output_path_path)
                 print(text)
             else:
-                _print_json(summary)
+                _emit(summary, args)
             return 0
 
         if args.command == "cloud":
@@ -764,7 +819,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.output:
                     _write_json_to_file(args.output, payload)
                 else:
-                    _print_json(payload)
+                    _emit(payload, args)
                 return 0
             if args.cloud_command == "archive-full":
                 result = fund_cloud.archive_full(

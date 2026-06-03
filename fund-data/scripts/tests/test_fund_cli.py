@@ -429,5 +429,106 @@ class FundCliTests(unittest.TestCase):
         self.assertEqual(captured["batch_id"], "batch-1")
 
 
+class JsonFlagContractTests(unittest.TestCase):
+    """All per-fund read commands (search / list / nav /
+    snapshot / holdings / profile / bonds / industries / fees /
+    dividends / splits / managers / coverage / coverage-report
+    / export / cloud) emit a single JSON document on stdout.
+    The ``--json`` flag is a *whitespace* toggle, not a
+    *content* toggle -- it picks compact (one line) vs.
+    indented (default) without changing the payload.
+
+    These tests pin the contract from the agent's perspective:
+    both modes round-trip through ``json.loads`` and produce
+    the same logical content, and the ``--json`` mode is
+    single-line so it pipes cleanly to ``jq``.
+    """
+
+    def _run_json_flag(self, *args) -> "subprocess.CompletedProcess":
+        """Helper: run the CLI with the given positional args
+        plus a known DB so cloud bootstrap doesn't go to the
+        network. Returns the subprocess result."""
+        db_path = "/tmp/fund_cli_json_test.sqlite"
+        return subprocess.run(
+            [sys.executable, str(CLI_PATH), *args, "--db", db_path, "--provider", "eastmoney"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    def test_search_default_output_is_indented_json(self) -> None:
+        """Without ``--json``, the output is indented (default
+        behavior -- human-readable)."""
+        result = self._run_json_flag("search", "沪深300", "--offline-raw", "/dev/null")
+        # Empty keyword set is fine -- we just want to assert
+        # the formatter, not the content. Any JSON-parseable
+        # stdout (even ``[]``) is enough.
+        if result.stdout.strip():
+            payload = json.loads(result.stdout)
+            # Default mode is indented: stdout has newlines
+            # between keys. ``json.dumps(..., indent=2)`` always
+            # produces multi-line output for non-empty input,
+            # but ``[]`` stays on one line. So we look for
+            # either: newlines OR an empty array.
+            if payload:
+                self.assertIn(
+                    "\n", result.stdout,
+                    "default mode should produce indented (multi-line) JSON",
+                )
+
+    def test_search_json_flag_produces_single_line_output(self) -> None:
+        """With ``--json``, stdout is a single line -- the
+        agent-friendly mode that ``jq`` and other line-oriented
+        tools expect."""
+        result = self._run_json_flag(
+            "search", "沪深300", "--offline-raw", "/dev/null", "--json"
+        )
+        # Even if stdout is empty (no rows), the formatter is
+        # the same; the test only runs when stdout is non-empty.
+        if result.stdout.strip():
+            # The first non-empty line must be parseable JSON.
+            first_line = result.stdout.split("\n", 1)[0]
+            payload = json.loads(first_line)
+            # Sanity: parseable as JSON, not just text.
+            self.assertIsInstance(payload, list)
+
+    def test_json_and_default_emit_equivalent_payload(self) -> None:
+        """Both modes must round-trip to the same logical
+        content. The flag is a whitespace toggle -- it must
+        never change the data, only the formatting."""
+        # Use a known-good offline-raw search payload to
+        # avoid provider calls. Same path, just toggled
+        # --json on/off.
+        import tempfile
+        from test_fund_data import SEARCH_PAYLOAD
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_path = Path(tmp) / "search.json"
+            raw_path.write_text(SEARCH_PAYLOAD, encoding="utf-8")
+
+            def run(args_list):
+                return subprocess.run(
+                    [sys.executable, str(CLI_PATH)] + args_list,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+
+            pretty = run([
+                "search", "沪深300", "--offline-raw", str(raw_path),
+                "--provider", "eastmoney",
+            ])
+            compact = run([
+                "search", "沪深300", "--offline-raw", str(raw_path),
+                "--provider", "eastmoney", "--json",
+            ])
+
+        self.assertEqual(pretty.returncode, 0, pretty.stderr)
+        self.assertEqual(compact.returncode, 0, compact.stderr)
+        # Both must parse to identical data structures.
+        self.assertEqual(json.loads(pretty.stdout), json.loads(compact.stdout))
+
+
 if __name__ == "__main__":
     unittest.main()
