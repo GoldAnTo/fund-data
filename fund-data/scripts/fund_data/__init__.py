@@ -157,6 +157,12 @@ from .fetch import (
     search_funds,
 )
 from .self_audit import build_self_audit_queue, check_fund_health
+from .completion import (
+    build_completion_plan,
+    load_completion_policy,
+    run_completion_plan,
+    verify_completion_run,
+)
 from .sync import (
     batch_sync_funds,
     coverage_report,
@@ -249,6 +255,11 @@ __all__ = [
     # self-audit
     "build_self_audit_queue",
     "check_fund_health",
+    # openclaw active-completion
+    "build_completion_plan",
+    "load_completion_policy",
+    "run_completion_plan",
+    "verify_completion_run",
 ]
 
 
