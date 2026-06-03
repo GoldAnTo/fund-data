@@ -373,7 +373,15 @@ def build_parser() -> argparse.ArgumentParser:
     health_check = subparsers.add_parser("health-check", help="Inspect one fund and recommend missing-data actions")
     health_check.add_argument("code")
     health_check.add_argument("--max-age-hours", type=float, default=36.0)
-    health_check.add_argument("--include-structural", action="store_true")
+    # Default ``include_structural=True`` here so the CLI matches
+    # the Python ``check_fund_health()`` default -- an operator
+    # asking "what is wrong with 110022?" usually wants to see
+    # the structural-empty / naturally-sparse context too.
+    health_check.add_argument(
+        "--include-structural",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     health_check.add_argument("--output")
     _add_common_db_arg(health_check)
 
