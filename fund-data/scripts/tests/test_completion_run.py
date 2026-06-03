@@ -334,6 +334,39 @@ class CompletionRunnerExecutionTests(unittest.TestCase):
         stdout_log = run_root / "logs" / "openclaw-20260603T000000Z-fund_profiles-p1.stdout.log"
         self.assertTrue(stdout_log.exists())
 
+    def test_rows_changed_is_summed_from_per_fund_results(self):
+        """Regression for the 2026-06-03 trial: batch-sync's stdout
+        only reports ``rows_changed`` inside ``results[0]``, not at
+        the top level. The runner used to surface 0 even when the
+        per-fund value was 22, so the verify report thought the
+        fill had no effect. Now we sum the per-fund values when no
+        aggregate counter is present."""
+        plan = _plan_payload()
+        plan["batches"] = [
+            {**plan["batches"][0], "batch_id": "openclaw-b1", "codes": ["110022"]}
+        ]
+        plan_path = self.tmp / "plan.json"
+        plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+        # Realistic batch-sync stdout for a single successful fill.
+        stdout = json.dumps({
+            "batch_id": "openclaw-b1",
+            "total": 1, "ok": 1, "failed": 0,
+            "results": [
+                {
+                    "fund_code": "110022", "status": "ok",
+                    "rows_changed": 22, "nav_rows": 20,
+                }
+            ],
+        })
+        with mock.patch.object(
+            completion.subprocess, "run",
+            return_value=subprocess.CompletedProcess(args="x", returncode=0, stdout=stdout, stderr=""),
+        ):
+            execution = fund_data.run_completion_plan(
+                plan_path=plan_path, confirm_execute=True
+            )
+        self.assertEqual(execution["summary"]["rows_changed"], 22)
+
     def test_provider_calls_is_not_double_counted(self):
         """Regression for Bug 2 / 2026-06-03 completion: the runner
         used to pre-fill ``summary.provider_calls`` from the plan's

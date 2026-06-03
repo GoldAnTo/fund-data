@@ -564,10 +564,11 @@ def _execute_batch(batch: dict[str, Any], run_root: Path) -> dict[str, Any]:
 def _rows_changed_from_output(stdout: str) -> int | None:
     """Try to parse a ``rows_changed`` number from a batch-sync JSON
     log line. The CLI prints a top-level batch summary with
-    ``ok`` / ``failed`` / per-fund ``rows_changed``. Returns the
-    aggregate ``rows_changed`` so the runner can decide whether the
-    batch actually moved any data, or ``None`` if the output is not
-    parseable.
+    ``ok`` / ``failed`` / a ``results`` array of per-fund
+    ``rows_changed``. We sum the per-fund values when no aggregate
+    counter is present, so a real fill (rows_changed > 0) always
+    surfaces in the execution report. Returns the aggregate number,
+    or ``None`` if the output is not parseable.
     """
     if not stdout:
         return None
@@ -583,7 +584,7 @@ def _rows_changed_from_output(stdout: str) -> int | None:
         return None
     if not isinstance(payload, dict):
         return None
-    # batch-sync prints aggregate counters at the top level.
+    # Aggregate counters, if the CLI ever adds them, win.
     for key in ("rows_changed", "rows_inserted", "rows_updated", "inserted", "rows"):
         if key in payload and isinstance(payload[key], int):
             return payload[key]
@@ -592,6 +593,22 @@ def _rows_changed_from_output(stdout: str) -> int | None:
         for key in ("rows_changed", "rows_inserted", "rows_updated", "inserted", "rows"):
             if key in summary and isinstance(summary[key], int):
                 return summary[key]
+    # Fall back to summing the per-fund rows_changed reported in the
+    # ``results`` array. batch-sync always emits this field even on
+    # a successful fill that did not add an aggregate summary.
+    results = payload.get("results")
+    if isinstance(results, list) and results:
+        total = 0
+        saw_int = False
+        for entry in results:
+            if not isinstance(entry, dict):
+                continue
+            value = entry.get("rows_changed")
+            if isinstance(value, int):
+                total += value
+                saw_int = True
+        if saw_int:
+            return total
     return None
 
 

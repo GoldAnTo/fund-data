@@ -267,3 +267,86 @@ Until fixed: `run_provider_chain` correctly falls through AkShare → Investoday
 4. `feat(refund): refresh 18 (unknown) fund_type by parsing
    fund_name` — regex on the Chinese fund_name (混合/股票/债券/QDII)
    as a fallback when Eastmoney's index is empty.
+
+---
+
+## Self-audit / OpenClaw active-completion gotchas (2026-06-03)
+
+Lessons from the `fund_self_audit` + `fund_completion_*` ships. Most
+of these are silent fallthroughs that look fine in the happy path but
+break the OpenClaw contract; treat any one of them as a release-blocker.
+
+### `self_audit` queue's P1 missing is dominated by back-end share classes
+
+When you run `fund_cli self-audit --limit 50` against a 26,953-fund
+universe, the top 50 P1 missing rows are almost all back-end share
+class codes (`000002`, `000012`, `000108`, `000140`, `000154`, ...,
+`002343`, `002606`, ...). These funds have a stub Eastmoney
+snapshot/NAV page: `eastmoney: provider returned no rows` even with
+`--refresh`. The same is true for the 380 funds sitting in
+`sync_failures` per the snapshot section above. **If the goal is to
+demonstrate `completion-run` actually filling rows, do not pick codes
+from the top of the self-audit queue by score** — pick a known good
+fund (e.g. `110022` 易方达消费行业股票) and craft the queue / plan by
+hand, or filter `--fund-type 股票型` to get past the share-class
+prefix. The auto chain (auto → AkShare → Investoday → Tushare) will
+*not* rescue a stub Eastmoney response.
+
+### `batch-sync` exits 0 with `failed: 0` even when every fund got 0 rows
+
+`fund_cli batch-sync` swallows per-fund provider failures into a
+`failed` JSON field and returns 0. A 3-fund trial against the
+back-end share class prefix returns
+`{"total": 3, "ok": 3, "failed": 0, "results": [{"status": "ok",
+"nav_rows": 0, ...}, ...]}` — the runner sees `returncode=0` and
+classifies the batch as a success even though `rows_changed=0`. The
+post-fix `completion._batch_failed_count` reads the JSON `failed`
+field and reports partial failures to the failure-rate budget, but it
+cannot tell the difference between "provider returned stub" and
+"fund genuinely has no data for this dataset". A `nav_rows: 0` on a
+non-shared class is a stronger "stub" signal than the `failed` field
+itself.
+
+### Snapshots have no `batch-sync` primitive yet
+
+`fund_cli batch-sync` exposes `--include-profile`, `--include-holdings`,
+`--include-bonds`, `--include-industries`, `--include-fees`, and
+`--include-distributions` — but no `--include-snapshots`. The
+completion plan builder therefore puts every snapshots P1 into the
+`blocked` list with a `fallback_cli` of `fund_cli snapshot <code>
+--provider auto` (singular `snapshot`, the actual subcommand name).
+If the OpenClaw loop is going to be the primary fill path, the next
+follow-up is `feat(cli): add --include-snapshots to batch-sync` so
+the runner can actually batch them.
+
+### P0 is not a queue of bad rows; it is a request to bootstrap the universe
+
+`build_self_audit_queue` emits P0 only when the caller passes an
+explicit `codes=` list and one of those codes is not in the local
+`funds` table. The recommended action is `fund_search`, not
+`fund_sync`. If a P0 appears in a self-audit run that did *not* pass
+`--code` / `--codes-file`, that is a regression. (Regression guard:
+`test_unknown_code_in_explicit_codes_is_p0_with_bootstrap_action` and
+`test_unknown_code_only_request_returns_p0_only`.)
+
+### `provider_calls` is the post-execution sum, not a pre-fill
+
+The runner used to pre-fill `execution["summary"]["provider_calls"]`
+with the plan's `estimated_provider_calls` in the budget-check
+branch and then increment it again per batch — a 2-code plan
+reported 4. After the fix, `provider_calls` starts at 0 and is
+incremented only by actually-executed batch sizes. Refusal paths
+leave it at 0; an operator reading the report can trust the field to
+reflect what the runner actually did, not what the plan estimated.
+(Regression guard: `test_provider_calls_is_not_double_counted` and
+`test_provider_calls_refusal_does_not_leak_estimated`.)
+
+### OpenClaw completion-run is a local-DB mutation, never a publish
+
+`run_completion_plan` does not import `fund_cloud` and refuses to
+call `cloud build-bundle` / `cloud upload` / `cloud archive-full` from
+anywhere. The MCP tool description for `fund_completion_run`
+explicitly says "Never publishes OSS" so an agent cannot confuse
+`executed: true` with "the OSS bundle is updated". Publishing is a
+separate operator step documented in
+`docs/agent-flows/openclaw-active-publish-playbook.md`.
