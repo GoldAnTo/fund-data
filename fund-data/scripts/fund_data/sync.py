@@ -29,7 +29,7 @@ from . import fetch, http, parsers, providers
 from . import normalizers
 from .paths import PROVIDER_AUTO, PROVIDER_EASTMONEY, utc_now
 from .store import FundDataStore
-from .http import FundDataClient
+from .http import FundDataClient, _RateLimiter
 
 __all__ = [
     "coverage_rows",
