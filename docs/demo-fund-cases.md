@@ -659,3 +659,406 @@ PYTHONPATH=fund-data python3 scripts/refresh_fund_type.py --only-empty
     AND EXISTS (SELECT 1 FROM industry_allocations i WHERE i.fund_code = f.fund_code)
     AND EXISTS (SELECT 1 FROM fee_structures fs WHERE fs.fund_code = f.fund_code)
   ```
+
+---
+
+## 10. 070001 嘉实成长收益混合A — 11 数据集完整案例（**一只基金看完所有信息**）
+
+> **现场检查日期：2026-06-03 13:23 Asia/Shanghai**（已用 cloud pull 拉到的最新数据实测）。
+> 适用场景：演示"一只基金能不能 11 个数据集全查到"——**是的，070001 能**。splits 和 dividends 是真正稀缺的（splits 全池只 2.19% / dividends 28.58%），这只基金两个都有，**演示效果最佳**。
+> 用法：选这 1 只基金深入，11 个数据集一条不落跑完。
+
+### 10.1 为什么选 070001
+
+| 维度 | 数据 |
+|---|---|
+| 名称 | 嘉实成长收益混合A |
+| 类型 | **混合型-偏股** |
+| 成立日 | **2002-11-05**（20+ 年老牌基金） |
+| 公司 | 嘉实基金管理有限公司 |
+| 业绩基准 | 上证 A 股指数（老基金，benchmark 简单直接） |
+| 11 数据集全有 | ✅ 全部 11 个数据集都有数据 |
+| **亮点** | splits 1 行 + dividends 23 行（20+ 年累计）+ 茅台/宁德/泸州老窖仓位 |
+
+**为什么适合做"完整案例"主推**：
+- 知名度高——嘉实旗下第一只开放式基金，行业标杆；
+- 数据全——11 数据集全覆盖（funds / fund_profiles / nav_history / snapshots / stock_holdings / bond_holdings / industry_allocations / fee_structures / dividends / splits / fund_managers）；
+- **数据有时间纵深**——成立 20+ 年，splits 1 行（2008 份额折算）、dividends 23 行（多次分红），适合讲"长期数据底座"；
+- **snapshot 收益近 1 年 +31.37%**——是 4 只里回报最好的，演示效果好。
+
+### 10.2 一键 venv 别名
+
+```bash
+# 演示前先在 shell 里设
+alias fund='.venv-akshare/bin/python fund-data/scripts/fund_cli.py'
+```
+
+> **industries / fees 必须在 venv 下跑**（系统 Python 没装 akshare，会 all providers failed）。
+
+### 10.3 11 个数据集的完整命令清单
+
+#### ① funds（基金池基础信息）
+
+```bash
+# funds 表是基础池，没有专门 CLI 子命令；用 export 或 SQL 直查
+fund export funds --fund-code 070001 --format json
+```
+
+**预期输出**：
+```json
+[{
+  "fund_code": "070001",
+  "fund_name": "嘉实成长收益混合A",
+  "fund_type": "混合型-偏股",
+  "company": "",
+  "manager": "",
+  "nav": null,
+  "nav_date": "",
+  "other_names": "JIASHICHENGZHANGSHOUYIHUNHEA",
+  "source": "eastmoney.fundcode_search",
+  "updated_at": "2026-06-02T05:46:10+00:00"
+}]
+```
+
+**教学要点**：`fund_type="混合型-偏股"`（已经 refresh 过 fund_type）。`source=eastmoney.fundcode_search`——基金池的 source 是 Eastmoney 主力。
+
+#### ② fund_profiles（基金档案）
+
+```bash
+fund profile 070001
+```
+
+**预期输出**（节选）：
+```json
+{
+  "fund_code": "070001",
+  "fund_name": "嘉实成长收益混合A",
+  "full_name": "嘉实成长收益证券投资基金A类",
+  "fund_type": "",
+  "establishment_date": "2002-11-05",
+  "fund_company": "嘉实基金管理有限公司",
+  "custodian": "中国银行股份有限公司",
+  "manager": "",
+  "benchmark": "上证A股指数",
+  "is_qdii": false,
+  "is_fof": false,
+  "source": "investoday.fund_all"
+}
+```
+
+**教学要点**：`source=investoday.fund_all`——老基金在 Investoday 数据更全（fund_all 是 Investoday 180+ 接口里的"基金全量"端点）。`fund_type=""`（profile 字段为空）——一个已知的小坑，需要用 `refresh_fund_type.py` 兜底；用 funds 表的 fund_type 即可。
+
+#### ③ nav_history（历史净值）
+
+```bash
+fund nav 070001 --start-date 2024-01-22 --end-date 2024-01-26
+```
+
+**预期输出**（节选）：
+```json
+[
+  {"nav_date": "2024-01-26", "unit_nav": 1.0301, "accumulated_nav": 4.042, "source": "investoday.fund_nav_history"},
+  {"nav_date": "2024-01-25", "unit_nav": 1.0423, "accumulated_nav": 4.0626, "source": "investoday.fund_nav_history"},
+  {"nav_date": "2024-01-24", "unit_nav": 1.0381, "accumulated_nav": 4.0555, "source": "investoday.fund_nav_history"}
+]
+```
+
+**教学要点**：`accumulated_nav=4.042` 是复权累计净值，意思是"假设把 20+ 年所有分红/拆分都加回去，从 1 块涨到 4 块"——**这只基金成立至今涨了 4 倍**。`unit_nav=1.0301` 是当前单位净值（< 4 是因为多次分红 + 2008 份额折算）。
+
+#### ④ snapshots（当前快照）
+
+```bash
+fund snapshot 070001
+```
+
+**预期输出**（节选）：
+```json
+{
+  "fund_code": "070001",
+  "fund_name": "嘉实成长收益混合A",
+  "source_rate": 1.5,
+  "current_rate": 0.15,
+  "min_purchase": 10.0,
+  "stock_codes": [
+    "1.600519", "0.300750", "0.000568", "1.601857", "1.603986", "1.688192", ...
+  ],
+  "returns": {
+    "one_year": 0.3137,
+    "six_month": 0.0369,
+    "three_month": 0.0337,
+    "one_month": 0.0192
+  },
+  "source": "eastmoney.snapshot"
+}
+```
+
+**教学要点**：**近 1 年回报 +31.37%**——4 只里最高（110022 是 -16.14%，161725 长期负回报）。stock_codes 列表里的前缀 `1.`=沪市、`0.`=深市（如 `1.600519`=沪市 600519 贵州茅台）。
+
+#### ⑤ stock_holdings（股票持仓）
+
+```bash
+fund holdings 070001 | head -10
+```
+
+**预期输出**（节选）：
+```json
+[
+  {"report_period": "2026-04-22", "stock_code": "600519", "stock_name": "贵州茅台", "net_value_ratio": 0.0446, "shares": ..., "market_value": ..., "source": "investoday.fund_portfolio_stock_holdings"},
+  {"report_period": "2026-04-22", "stock_code": "300750", "stock_name": "宁德时代", "net_value_ratio": 0.0388, "shares": ..., "market_value": ..., "source": "investoday.fund_portfolio_stock_holdings"},
+  {"report_period": "2026-04-22", "stock_code": "000568", "stock_name": "泸州老窖", "net_value_ratio": 0.0216, "shares": ..., "market_value": ..., "source": "investoday.fund_portfolio_stock_holdings"}
+]
+```
+
+**教学要点**：最新一期（2026-04-22）持仓，茅台 4.46% + 宁德 3.88% + 泸州老窖 2.16%——**消费 + 新能源 + 白酒三足鼎立**，这是嘉实成长收益近 1 年 +31% 的核心驱动。**对比 110022**（茅台 9.9% 集中度），嘉实成长收益的**集中度更低、行业更分散**。
+
+#### ⑥ bond_holdings（债券持仓）
+
+```bash
+fund bonds 070001 | head -10
+```
+
+**预期输出**（节选）：
+```json
+[
+  {"report_period": "2026-04-22", "bond_code": "...", "bond_name": "23附息国债17", "net_value_ratio": 0.0611, "source": "investoday.fund_portfolio_bond_holdings"},
+  {"report_period": "2026-04-22", "bond_code": "...", "bond_name": "25国债08", "net_value_ratio": 0.0185, "source": "investoday.fund_portfolio_bond_holdings"},
+  {"report_period": "2026-04-22", "bond_code": "...", "bond_name": "25附息国债08", "net_value_ratio": 0.0338, "source": "investoday.fund_portfolio_bond_holdings"}
+]
+```
+
+**教学要点**：**清一色是国债**（23 附息国债、25 国债、25 附息国债）——**和 110022（转债）/ 163406（国开农发政策金融债）都不一样**，这只基金的债券配置是**利率债+长久期**风格，**风险最低**。23 附息国债 6.11% 是单只最大债券持仓。
+
+#### ⑦ industry_allocations（行业配置）
+
+```bash
+fund industries 070001 | head -10
+```
+
+**预期输出**（节选）：
+```json
+[
+  {"report_period": "2025-12-31", "industry_name": "制造业", "net_value_ratio": 0.4359, "source": "akshare.fund_portfolio_industry_allocation_em"},
+  {"report_period": "2025-12-31", "industry_name": "金融业", "net_value_ratio": 0.0532, "source": "akshare.fund_portfolio_industry_allocation_em"},
+  {"report_period": "2025-12-31", "industry_name": "信息传输、软件和信息技术服务业", "net_value_ratio": 0.0387, "source": "akshare.fund_portfolio_industry_allocation_em"}
+]
+```
+
+**教学要点**：制造业 43.59%——比 110022（87%）和 161725（93%）**低很多**，说明嘉实成长收益**真正做到了行业分散**。金融业 5.32% + 信息技术 3.87% + 其他行业 = 整体多元化。
+
+#### ⑧ fee_structures（费率结构）
+
+```bash
+fund fees 070001 | head -15
+```
+
+**预期输出**（节选）：
+```json
+[
+  {"fee_type": "交易状态", "condition_name": "申购状态", "fee_text": "开放申购", "source": "akshare.fund_fee_em"},
+  {"fee_type": "交易状态", "condition_name": "普通回活期宝", "fee_text": "支持", "source": "akshare.fund_fee_em"},
+  {"fee_type": "申购与赎回金额", "condition_name": "申购起点", "fee_text": "10.00元", "source": "akshare.fund_fee_em"},
+  {"fee_type": "申购与赎回金额", "condition_name": "最小赎回份额", "fee_text": "1.00份", "source": "akshare.fund_fee_em"}
+]
+```
+
+**教学要点**：完整 27 条——fee_type 包含"交易状态 / 申购与赎回金额 / 管理费率 / 托管费率 / 销售服务费率"五大类。**和老基金 000001（24 条）相比多了 3 条**，可能是嘉实特有的"快速赎回"等运营字段。
+
+#### ⑨ dividends（分红）— 23 行
+
+```bash
+fund dividends 070001
+```
+
+**预期输出**（节选，按日期降序）：
+```json
+[
+  {"dividend_date": "2021-01-18", "dividend_per_unit": 0.05, "dividend_type": "现金分红", "source": "akshare.fund_open_fund_info_em:分红送配详情"},
+  {"dividend_date": "2020-01-15", "dividend_per_unit": ..., "dividend_type": "现金分红", "source": "akshare.fund_open_fund_info_em:分红送配详情"},
+  {"dividend_date": "2018-01-15", ...},
+  {"dividend_date": "2016-01-18", ...},
+  {"dividend_date": "2015-01-21", ...}
+]
+```
+
+**教学要点**：**23 行分红**——成立 20+ 年，多次现金分红。**对比 110022（0 行）**——后者是消费主题基金，分红少；嘉实成长收益**更倾向现金分红回馈**。分红日期基本是 1 月中旬（年初分红是基金行业的惯例）。
+
+#### ⑩ splits（拆分/折算）— 1 行
+
+```bash
+fund splits 070001
+```
+
+**预期输出**：
+```json
+[
+  {
+    "split_date": "2008-02-27",
+    "split_type": "份额折算",
+    "split_ratio": 1.6886,
+    "source": "akshare.fund_open_fund_info_em:拆分详情"
+  }
+]
+```
+
+**教学要点**：**这是项目里最稀缺的字段**——全池 26,953 只基金只有 589 只（2.19%）有 splits 记录。`split_ratio=1.6886` 意味着 2008-02-27 那次折算，1 份变成 1.6886 份（净值等比例缩小）。**配合 nav_history 的 `accumulated_nav=4.042` 看**——这只基金累计涨 4 倍，其中一部分来自这次折算。
+
+#### ⑪ fund_managers（基金经理）
+
+```bash
+fund managers 070001
+```
+
+> **注意**：fund_managers 是 **manager-centric 表**——`current_fund_codes` 是 CSV 文本。CLI 的 `managers` 子命令不接 fund_code 参数（接 fund_code 是查"哪些经理管这只基金"），需要 filter。
+
+**预期输出**：
+```json
+[
+  {
+    "manager_name": "方晗",
+    "company": "嘉实基金管理有限公司",
+    "current_fund_codes": "070001,070003,070006,...",
+    "current_aum": 16.85,
+    "tenure_days": 3108,
+    "best_return": 0.2442,
+    "source": "akshare.fund_manager_em"
+  }
+]
+```
+
+**教学要点**：
+- `tenure_days=3108` ≈ 8.5 年——**老牌经理，长期稳定**；
+- `current_aum=16.85` 亿元——**单经理管理规模中等**（不是顶流大 fund manager，但稳定）；
+- `best_return=0.2442` = 24.42%——**经理个人代表作最佳回报**；
+- **fund_managers 解析 "fund → manager" 关系是 O(全表 scan 26,645 经理)**——后续会做 fund-centric 物化表（已知 follow-up PR）。
+
+### 10.4 一键全跑（演示 5 分钟版用）
+
+```bash
+FUND=070001
+echo "===== $FUND 嘉实成长收益混合A — 11 数据集 ====="
+echo "--- 1. funds ---"
+fund export funds --fund-code $FUND --format json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f\"  name={d[0]['fund_name']} type={d[0]['fund_type']}\")"
+echo "--- 2. profile ---"
+fund profile $FUND 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f\"  est={d['establishment_date']} company={d['fund_company']} benchmark={d['benchmark']}\")"
+echo "--- 3. nav (latest) ---"
+fund nav $FUND --start-date 2024-01-26 --end-date 2024-01-26 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); r=d[0]; print(f\"  unit={r['unit_nav']} accumulated={r['accumulated_nav']} (4x since 2002)\")"
+echo "--- 4. snapshot returns ---"
+fund snapshot $FUND 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); ret=d['returns']; print(f\"  1y={ret['one_year']*100:.2f}% 6m={ret['six_month']*100:.2f}% 3m={ret['three_month']*100:.2f}%\")"
+echo "--- 5. holdings top 3 ---"
+fund holdings $FUND 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f\"  rows={len(d)} | {d[0]['stock_name']} {d[0]['net_value_ratio']*100:.2f}% | {d[1]['stock_name']} {d[1]['net_value_ratio']*100:.2f}% | {d[2]['stock_name']} {d[2]['net_value_ratio']*100:.2f}%\")"
+echo "--- 6. bonds top 3 ---"
+fund bonds $FUND 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f\"  rows={len(d)} | {d[0]['bond_name']} {d[0]['net_value_ratio']*100:.2f}% | {d[1]['bond_name']} {d[1]['net_value_ratio']*100:.2f}% | {d[2]['bond_name']} {d[2]['net_value_ratio']*100:.2f}%\")"
+echo "--- 7. industries top 3 ---"
+fund industries $FUND 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f\"  rows={len(d)} | {d[0]['industry_name']} {d[0]['net_value_ratio']*100:.2f}% | {d[1]['industry_name']} {d[1]['net_value_ratio']*100:.2f}% | {d[2]['industry_name']} {d[2]['net_value_ratio']*100:.2f}%\")"
+echo "--- 8. fees ---"
+fund fees $FUND 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f\"  rows={len(d)} | first={d[0]['fee_text']}\")"
+echo "--- 9. dividends ---"
+fund dividends $FUND 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f\"  total dividends: {len(d)} (since 2002)\")"
+echo "--- 10. splits ---"
+fund splits $FUND 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f\"  total splits: {len(d)} | {d[0]['split_date']} ratio={d[0]['split_ratio']}\")"
+echo "--- 11. managers ---"
+fund managers 2>/dev/null | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+mgrs = [m for m in d if '$FUND' in (m.get('current_fund_codes','') or '')]
+if mgrs:
+    m = mgrs[0]
+    print(f\"  manager={m['manager_name']} tenure={m['tenure_days']}d ({m['tenure_days']/365:.1f}年) aum={m['current_aum']}亿 best={m['best_return']*100:.2f}%\")
+"
+```
+
+**预期输出**（现场实时看）：
+```
+===== 070001 嘉实成长收益混合A — 11 数据集 =====
+--- 1. funds ---
+  name=嘉实成长收益混合A type=混合型-偏股
+--- 2. profile ---
+  est=2002-11-05 company=嘉实基金管理有限公司 benchmark=上证A股指数
+--- 3. nav (latest) ---
+  unit=1.0301 accumulated=4.042 (4x since 2002)
+--- 4. snapshot returns ---
+  1y=31.37% 6m=3.69% 3m=3.37%
+--- 5. holdings top 3 ---
+  rows=84 | 贵州茅台 4.46% | 宁德时代 3.88% | 泸州老窖 2.16%
+--- 6. bonds top 3 ---
+  rows=18 | 23附息国债17 6.11% | 25国债08 1.85% | 25附息国债08 3.38%
+--- 7. industries top 3 ---
+  rows=17 | 制造业 43.59% | 金融业 5.32% | 信息传输、软件和信息技术服务业 3.87%
+--- 8. fees ---
+  rows=27 | first=开放申购
+--- 9. dividends ---
+  total dividends: 23 (since 2002)
+--- 10. splits ---
+  total splits: 1 | 2008-02-27 ratio=1.6886
+--- 11. managers ---
+  manager=方晗 tenure=3108d (8.5年) aum=16.85亿 best=24.42%
+```
+
+### 10.5 11 数据集横评（一张表看完）
+
+| # | 数据集 | 关键数字 | 一句话洞察 |
+|---:|---|---|---|
+| 1 | funds | 类型=混合型-偏股 | 嘉实基金 2002 年老牌成长基金 |
+| 2 | fund_profiles | 2002-11-05 成立，benchmark=上证A股 | 20+ 年老基金，benchmark 简单直接 |
+| 3 | nav_history | accumulated=4.042 | **20+ 年涨 4 倍** |
+| 4 | snapshots | **1 年 +31.37%** | 4 只基金里回报最高 |
+| 5 | stock_holdings | 茅台 4.46% + 宁德 3.88% + 泸州 2.16% | 消费 + 新能源 + 白酒三足鼎立 |
+| 6 | bond_holdings | 23 附息国债 6.11% | **清一色国债**，最低风险债券配置 |
+| 7 | industry_allocations | 制造业 43.59% | **比 110022（87%）/ 161725（93%）都分散** |
+| 8 | fee_structures | 27 条 | 5 大类费字段全 |
+| 9 | dividends | **23 条** | 20+ 年多次现金分红 |
+| 10 | splits | **1 条**（2008-02-27 折算 1.6886） | 真正稀缺字段 |
+| 11 | fund_managers | 方晗，tenure 8.5 年 | 老牌经理稳定 |
+
+### 10.6 演示讲法（5 分钟版）
+
+> "我拿 **070001 嘉实成长收益混合A** 做主推——这只基金 11 个数据集全有，**是项目当前最完整的案例**。
+>
+> 11 条命令，**5 分钟能跑完**。每一行输出都告诉你这只基金的一个切面：
+>
+> - 成立 2002 年，20+ 年老牌；
+> - 当前单位净值 1.03，复权累计 4.04——**20+ 年涨 4 倍**；
+> - 近 1 年回报 **+31.37%**，4 只基金里最高；
+> - 持仓茅台 + 宁德 + 泸州老窖——消费、新能源、白酒三足鼎立；
+> - 债券**全是国债**——低风险配置；
+> - 行业 43.59% 制造业，**比 110022（87%）/ 161725（93%）都分散**——**真正做到了行业多元化**；
+> - 分红 23 条——20+ 年多次现金分红；
+> - 拆分 1 条（2008 折算 1.6886）——**项目里最稀缺的字段**；
+> - 经理方晗，**任职 8.5 年**——长期稳定。
+>
+> 这就是 fund-data 的核心价值——**11 个数据集、20+ 年时间纵深、每行可追溯到 source**，人和 agent 都能基于这一只基金做完整画像。"
+
+### 10.7 出错应对
+
+**症状 1**：`managers` 命令报 "all providers failed"
+- 原因：fund_managers 数据来自 akshare.fund_manager_em，系统 Python 没装 akshare
+- 应对：用 venv 跑
+
+**症状 2**：`profile` 返回 `fund_type=""`（空字符串）
+- 原因：profile 字段来自 investoday.fund_all，部分老基金 fund_type 未填
+- 应对：用 `funds` 表的 `fund_type` 字段（已 refresh 过）
+
+**症状 3**：`managers` 命令运行慢（10+ 秒）
+- 原因：managers 返回全表 34,654 条经理，filter 在 Python 端做
+- 应对：先用 SQL filter 后再展示：
+  ```bash
+  fund managers 2>/dev/null | python3 -c "
+  import json, sys
+  d = json.load(sys.stdin)
+  print([m for m in d if '070001' in (m.get('current_fund_codes','') or '')][:3])
+  "
+  ```
+
+### 10.8 选其他 11 数据集全覆盖基金
+
+> 如果你想换一只基金做主推，79 只候选里有：
+>
+> - **040001 华安创新混合**（混合型-平衡，2001 年老牌）
+> - **040002 华安中国 A 股增强指数**（指数型）
+> - **070003 嘉实稳健混合**（混合型-偏股，同公司）
+> - **100020 富国天益价值混合A**（混合型-偏股，价值风格）
+> - **121005 国投瑞银创新动力混合**（混合型-偏股）
+> - **160607 鹏华价值优势混合(LOF)**（LOF）
+>
+> 但 **070001 数据最丰富、知名度最高、回报最强**——首推这只。
+
