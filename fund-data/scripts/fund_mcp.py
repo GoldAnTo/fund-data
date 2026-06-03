@@ -408,6 +408,21 @@ def _local_rows(table: str, arguments: dict[str, Any], fund_code: str) -> list[d
     return fund_data.export_table(table, db_path=_db(arguments), fund_code=fund_code)
 
 
+def _filter_report_year(
+    rows: list[dict[str, Any]], report_year: str | None
+) -> list[dict[str, Any]]:
+    """Restrict rows to a given year. ``report_period`` is the
+    canonical field on stock/bond/industry holdings and is
+    formatted ``YYYY-MM-DD`` (quarterly reports) or ``YYYY``
+    (annual). A prefix match on the 4-digit year is enough to
+    pin down the caller's request without trusting the provider
+    to filter on its end. Empty ``report_year`` is a no-op."""
+    if not report_year:
+        return rows
+    prefix = str(report_year)[:4]
+    return [r for r in rows if str(r.get("report_period", "")).startswith(prefix)]
+
+
 def _maybe_bootstrap_cloud(arguments: dict[str, Any]) -> None:
     if _optional_str(arguments, "db"):
         return
@@ -452,8 +467,12 @@ def _call_fund_nav_history(arguments: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _call_fund_snapshot(arguments: dict[str, Any]) -> dict[str, Any]:
+    code = _required_str(arguments, "code")
+    rows = _local_rows("snapshots", arguments, code)
+    if rows:
+        return rows[0]
     return fund_data.fetch_snapshot(
-        _required_str(arguments, "code"), db_path=_db(arguments), provider=_provider(arguments)
+        code, db_path=_db(arguments), provider=_provider(arguments)
     )
 
 
@@ -468,35 +487,60 @@ def _call_fund_profile(arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def _call_fund_stock_holdings(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    code = _required_str(arguments, "code")
+    report_year = _optional_str(arguments, "report_year")
+    rows = _filter_report_year(
+        _local_rows("stock_holdings", arguments, code), report_year
+    )
+    if rows:
+        return rows
     return fund_data.fetch_stock_holdings(
-        _required_str(arguments, "code"),
-        report_year=_optional_str(arguments, "report_year"),
+        code,
+        report_year=report_year,
         db_path=_db(arguments),
         provider=_provider(arguments),
     )
 
 
 def _call_fund_bond_holdings(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    code = _required_str(arguments, "code")
+    report_year = _optional_str(arguments, "report_year")
+    rows = _filter_report_year(
+        _local_rows("bond_holdings", arguments, code), report_year
+    )
+    if rows:
+        return rows
     return fund_data.fetch_bond_holdings(
-        _required_str(arguments, "code"),
-        report_year=_optional_str(arguments, "report_year"),
+        code,
+        report_year=report_year,
         db_path=_db(arguments),
         provider=_provider(arguments),
     )
 
 
 def _call_fund_industry_allocations(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    code = _required_str(arguments, "code")
+    report_year = _optional_str(arguments, "report_year")
+    rows = _filter_report_year(
+        _local_rows("industry_allocations", arguments, code), report_year
+    )
+    if rows:
+        return rows
     return fund_data.fetch_industry_allocations(
-        _required_str(arguments, "code"),
-        report_year=_optional_str(arguments, "report_year"),
+        code,
+        report_year=report_year,
         db_path=_db(arguments),
         provider=_provider(arguments),
     )
 
 
 def _call_fund_fee_structures(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    code = _required_str(arguments, "code")
+    rows = _local_rows("fee_structures", arguments, code)
+    if rows:
+        return rows
     return fund_data.fetch_fee_structures(
-        _required_str(arguments, "code"),
+        code,
         indicators=_optional_str_list(arguments, "indicators"),
         db_path=_db(arguments),
         provider=_provider(arguments),
@@ -504,14 +548,22 @@ def _call_fund_fee_structures(arguments: dict[str, Any]) -> list[dict[str, Any]]
 
 
 def _call_fund_dividends(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    code = _required_str(arguments, "code")
+    rows = _local_rows("dividends", arguments, code)
+    if rows:
+        return rows
     return fund_data.fetch_dividends(
-        _required_str(arguments, "code"), db_path=_db(arguments), provider=_provider(arguments)
+        code, db_path=_db(arguments), provider=_provider(arguments)
     )
 
 
 def _call_fund_splits(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    code = _required_str(arguments, "code")
+    rows = _local_rows("splits", arguments, code)
+    if rows:
+        return rows
     return fund_data.fetch_splits(
-        _required_str(arguments, "code"), db_path=_db(arguments), provider=_provider(arguments)
+        code, db_path=_db(arguments), provider=_provider(arguments)
     )
 
 

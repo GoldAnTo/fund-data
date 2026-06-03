@@ -354,6 +354,217 @@ class FundMcpProtocolTests(unittest.TestCase):
         self.assertEqual(response["id"], 4)
         self.assertEqual(response["result"]["serverInfo"]["name"], "fund-data")
 
+    def test_known_code_tools_use_local_rows_before_provider(self):
+        """The MCP local-first pattern is consistent across all
+        per-fund tools: ``fund_snapshot``, ``fund_stock_holdings``,
+        ``fund_bond_holdings``, ``fund_industry_allocations``,
+        ``fund_fee_structures``, ``fund_dividends``, and
+        ``fund_splits`` should each hit the local SQLite table
+        first and only fall through to the provider chain when
+        the local table is empty. This single test exercises
+        every one of them with a seeded local row + a
+        ``side_effect=AssertionError`` provider mock, so a
+        regression in any handler surfaces as one specific
+        failure.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            store = fund_mcp.fund_data.FundDataStore(db_path)
+            # ``snapshots`` and ``fund_profiles`` are keyed on
+            # ``fund_code`` alone; the holdings tables are keyed
+            # on ``(fund_code, report_period, ...)``.
+            store.upsert_snapshot(
+                {
+                    "fund_code": "110022",
+                    "fund_name": "易方达消费行业股票",
+                    "source_rate": 0.015,
+                    "current_rate": 0.012,
+                    "min_purchase": 1.0,
+                    "returns_json": "{}",
+                    "stock_codes_json": "[]",
+                    "source": "local.snapshot",
+                }
+            )
+            store.upsert_stock_holdings(
+                "110022",
+                [
+                    {
+                        "stock_code": "000858",
+                        "stock_name": "五粮液",
+                        "report_period": "2024-09-30",
+                        "net_value_ratio": 0.092,
+                        "shares": 100.0,
+                        "market_value": 15000.0,
+                        "source": "local.test",
+                    }
+                ],
+            )
+            store.upsert_bond_holdings(
+                "110022",
+                [
+                    {
+                        "bond_code": "127045",
+                        "bond_name": "test_bond",
+                        "report_period": "2024-09-30",
+                        "net_value_ratio": 0.05,
+                        "market_value": 5000.0,
+                        "source": "local.test",
+                    }
+                ],
+            )
+            store.upsert_industry_allocations(
+                "110022",
+                [
+                    {
+                        "industry_name": "制造业",
+                        "report_period": "2024-09-30",
+                        "net_value_ratio": 0.4,
+                        "source": "local.test",
+                    }
+                ],
+            )
+            store.upsert_fee_structures(
+                "110022",
+                [
+                    {
+                        "fee_type": "申购费率",
+                        "condition_name": "标准",
+                        "fee": 0.015,
+                        "source": "local.test",
+                    }
+                ],
+            )
+            store.upsert_dividends(
+                "110022",
+                [
+                    {
+                        "dividend_date": "2024-05-10",
+                        "ex_dividend_date": "2024-05-13",
+                        "dividend_per_share": 0.05,
+                        "source": "local.test",
+                    }
+                ],
+            )
+            store.upsert_splits(
+                "110022",
+                [
+                    {
+                        "split_date": "2024-01-10",
+                        "split_type": "份额折算",
+                        "split_ratio": 1.0,
+                        "source": "local.test",
+                    }
+                ],
+            )
+
+            def call(tool_name: str) -> Any:
+                return fund_mcp.handle_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 20,
+                        "method": "tools/call",
+                        "params": {
+                            "name": tool_name,
+                            "arguments": {"code": "110022", "db": str(db_path)},
+                        },
+                    }
+                )
+
+            with patch.object(
+                fund_mcp.fund_data, "fetch_snapshot", side_effect=AssertionError("provider ran")
+            ), patch.object(
+                fund_mcp.fund_data, "fetch_stock_holdings", side_effect=AssertionError("provider ran")
+            ), patch.object(
+                fund_mcp.fund_data, "fetch_bond_holdings", side_effect=AssertionError("provider ran")
+            ), patch.object(
+                fund_mcp.fund_data, "fetch_industry_allocations", side_effect=AssertionError("provider ran")
+            ), patch.object(
+                fund_mcp.fund_data, "fetch_fee_structures", side_effect=AssertionError("provider ran")
+            ), patch.object(
+                fund_mcp.fund_data, "fetch_dividends", side_effect=AssertionError("provider ran")
+            ), patch.object(
+                fund_mcp.fund_data, "fetch_splits", side_effect=AssertionError("provider ran")
+            ):
+                # Single-row tool: returns the dict directly.
+                snap = call("fund_snapshot")["result"]
+                self.assertFalse(snap["isError"])
+                self.assertEqual(snap["structuredContent"]["fund_code"], "110022")
+                self.assertEqual(snap["structuredContent"]["source"], "local.snapshot")
+                # List tools: rows are wrapped in a ``rows``/``count``
+                # envelope by the protocol layer.
+                for tool, expected in (
+                    ("fund_stock_holdings", "000858"),
+                    ("fund_bond_holdings", "127045"),
+                    ("fund_industry_allocations", "制造业"),
+                    ("fund_fee_structures", "申购费率"),
+                    ("fund_dividends", "2024-05-10"),
+                    ("fund_splits", "2024-01-10"),
+                ):
+                    payload = call(tool)["result"]
+                    self.assertFalse(payload["isError"], f"{tool} errored: {payload}")
+                    rows = payload["structuredContent"]["rows"]
+                    self.assertEqual(len(rows), 1, f"{tool}: {rows}")
+                    # Pick a column that's unique to each table
+                    # so a wrong-table regression surfaces as a
+                    # concrete value mismatch, not just "row count
+                    # wrong".
+                    self.assertIn(expected, str(rows[0]), f"{tool}: row {rows[0]} missing {expected!r}")
+
+    def test_holdings_report_year_filter_applies_to_local_rows(self):
+        """``_filter_report_year`` is the same helper used by
+        stock/bond/industry holdings: a non-empty local table
+        must still return zero rows when the caller asks for a
+        year we don't have, and the handler should fall through
+        to the provider on that miss.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            store = fund_mcp.fund_data.FundDataStore(db_path)
+            store.upsert_stock_holdings(
+                "110022",
+                [
+                    {
+                        "stock_code": "000858",
+                        "stock_name": "五粮液",
+                        "report_period": "2023-09-30",
+                        "net_value_ratio": 0.1,
+                        "shares": 100.0,
+                        "market_value": 15000.0,
+                        "source": "local.test",
+                    }
+                ],
+            )
+
+            with patch.object(
+                fund_mcp.fund_data, "fetch_stock_holdings", return_value=[]
+            ) as mock_fetch:
+                response = fund_mcp.handle_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 21,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "fund_stock_holdings",
+                            "arguments": {
+                                "code": "110022",
+                                "report_year": "2024",
+                                "db": str(db_path),
+                            },
+                        },
+                    }
+                )
+
+            # Local row is 2023; the request is 2024. The local
+            # filter must drop the row, the handler must call
+            # the provider, and the response rows come from the
+            # mocked fetch.
+            mock_fetch.assert_called_once_with(
+                "110022", report_year="2024", db_path=str(db_path), provider="auto"
+            )
+            self.assertEqual(
+                response["result"]["structuredContent"]["rows"], []
+            )
+
 
 class FundMcpErrorPathTests(unittest.TestCase):
     """MCP is the agent's primary entry point. The error responses
