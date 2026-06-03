@@ -312,6 +312,29 @@ TOOLS: list[dict[str, Any]] = [
             "manifest_url": _string_schema("Optional remote manifest URL to compare against."),
         },
     ),
+    _tool(
+        "fund_health_check",
+        "Inspect one fund's local OSS/SQLite rows and recommend missing-data actions without executing refresh.",
+        {
+            "db": COMMON_ARGS["db"],
+            "code": _string_schema("6-digit fund code."),
+            "max_age_hours": _number_schema("Stale threshold in hours.", minimum=0),
+            "include_structural": _boolean_schema("Include structural-empty / naturally sparse info rows."),
+        },
+        required=["code"],
+    ),
+    _tool(
+        "fund_self_audit",
+        "Build a prioritized read-only remediation queue for missing or stale fund datasets.",
+        {
+            "db": COMMON_ARGS["db"],
+            "codes": _array_schema("Optional fund codes.", _string_schema("6-digit fund code")),
+            "fund_type": _string_schema("Filter by fund type substring."),
+            "max_age_hours": _number_schema("Stale threshold in hours.", minimum=0),
+            "include_structural": _boolean_schema("Include structural-empty / naturally sparse info rows."),
+            "limit": _integer_schema("Maximum queue items to return.", minimum=1),
+        },
+    ),
 ]
 
 
@@ -662,6 +685,26 @@ def _call_fund_cloud_status(arguments: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _call_fund_health_check(arguments: dict[str, Any]) -> dict[str, Any]:
+    return fund_data.check_fund_health(
+        _required_str(arguments, "code"),
+        db_path=_db(arguments),
+        max_age_hours=_optional_float(arguments, "max_age_hours", 36.0) or 36.0,
+        include_structural=_optional_bool(arguments, "include_structural"),
+    )
+
+
+def _call_fund_self_audit(arguments: dict[str, Any]) -> dict[str, Any]:
+    return fund_data.build_self_audit_queue(
+        db_path=_db(arguments),
+        codes=_optional_str_list(arguments, "codes"),
+        fund_type=_optional_str(arguments, "fund_type"),
+        max_age_hours=_optional_float(arguments, "max_age_hours", 36.0) or 36.0,
+        include_structural=_optional_bool(arguments, "include_structural"),
+        limit=_optional_int(arguments, "limit"),
+    )
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "fund_search": _call_fund_search,
     "fund_list": _call_fund_list,
@@ -681,6 +724,8 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any]], Any]] = {
     "fund_coverage_report": _call_fund_coverage_report,
     "fund_export": _call_fund_export,
     "fund_cloud_status": _call_fund_cloud_status,
+    "fund_health_check": _call_fund_health_check,
+    "fund_self_audit": _call_fund_self_audit,
 }
 
 

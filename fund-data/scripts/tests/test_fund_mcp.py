@@ -777,6 +777,46 @@ class FundMcpErrorPathTests(unittest.TestCase):
         self.assertEqual(result["structuredContent"]["count"], len(rows))
         mock_report.assert_called_once()
 
+    def test_fund_self_audit_returns_priority_queue(self):
+        payload = {
+            "summary": {"queue_size": 1, "auto_fill_executed": False},
+            "queue": [{"fund_code": "110022", "dataset": "fund_profiles", "priority": "P1"}],
+            "batch_suggestions": [],
+        }
+        with patch.object(fund_mcp.fund_cloud, "ensure_project_bundle"), patch.object(
+            fund_mcp.fund_data, "build_self_audit_queue", return_value=payload
+        ) as mock_audit:
+            response = fund_mcp.handle_message({
+                "jsonrpc": "2.0",
+                "id": 50,
+                "method": "tools/call",
+                "params": {
+                    "name": "fund_self_audit",
+                    "arguments": {"limit": 10, "max_age_hours": 36},
+                },
+            })
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(response["result"]["structuredContent"], payload)
+        mock_audit.assert_called_once()
+
+    def test_fund_health_check_returns_single_fund_queue(self):
+        payload = {"summary": {"queue_size": 0, "auto_fill_executed": False}, "queue": [], "batch_suggestions": []}
+        with patch.object(fund_mcp.fund_cloud, "ensure_project_bundle"), patch.object(
+            fund_mcp.fund_data, "check_fund_health", return_value=payload
+        ) as mock_health:
+            response = fund_mcp.handle_message({
+                "jsonrpc": "2.0",
+                "id": 51,
+                "method": "tools/call",
+                "params": {
+                    "name": "fund_health_check",
+                    "arguments": {"code": "110022"},
+                },
+            })
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(response["result"]["structuredContent"], payload)
+        mock_health.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
