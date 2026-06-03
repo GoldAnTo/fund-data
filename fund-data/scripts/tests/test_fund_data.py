@@ -8,6 +8,7 @@ import time
 import unittest
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1]
@@ -195,6 +196,77 @@ class FundDataProviderTests(unittest.TestCase):
         )
 
         self.assertEqual(result.rows, [])
+
+    def test_akshare_industry_allocations_swallows_v11864_length_mismatch(self):
+        """AkShare v1.18.64 raises
+        ``ValueError: Length mismatch: Expected axis has 1
+        elements, new values have 17 elements`` from
+        ``fund_portfolio_industry_allocation_em`` because
+        upstream Eastmoney renamed the industry breakdown
+        column and ``reset_index()`` no longer produces a
+        1-col index that matches the replacement column
+        list. The wrapper must catch this and return ``[]``
+        so the chain falls through to Investoday (when
+        ``INVESTODAY_API_KEY`` is set) instead of crashing
+        the bulk runner. ``bond_holdings`` already had this
+        guard; parity for ``industry_allocations`` is the
+        whole point of this regression test.
+        """
+        boom = ValueError(
+            "Length mismatch: Expected axis has 1 elements, "
+            "new values have 17 elements"
+        )
+
+        def _explode(symbol, date):
+            raise boom
+
+        fake_ak = SimpleNamespace(
+            fund_portfolio_industry_allocation_em=_explode,
+        )
+        # Build a real AkshareProvider instance and patch just
+        # its ``ak`` attribute so the wrapper code path runs
+        # end-to-end (we want the production try/except, not a
+        # re-implementation in the test).
+        provider = fund_data.AkshareProvider()
+        with patch.object(provider, "ak", fake_ak):
+            rows = provider.industry_allocations("110022", report_year="2024")
+        self.assertEqual(rows, [])
+
+    def test_bond_industry_chain_uses_akshare_first_then_investoday(self):
+        """For the AkShare-owned capabilities (bond_holdings,
+        industry_allocations, profile, etc.) the auto chain
+        must put AkShare FIRST -- otherwise an empty
+        Investoday response would short-circuit the chain
+        and the bulk runner would never see the AkShare
+        rows it actually needs. This is the inverse of the
+        old "Investoday-prepends" order; the test pins the
+        new order so a future revert is caught."""
+        saved = {
+            "INVESTODAY_API_KEY": os.environ.get("INVESTODAY_API_KEY"),
+            "INVESTDATA_API_KEY": os.environ.get("INVESTDATA_API_KEY"),
+            "TUSHARE_TOKEN": os.environ.get("TUSHARE_TOKEN"),
+        }
+        try:
+            os.environ["INVESTODAY_API_KEY"] = "test-key"
+            os.environ.pop("TUSHARE_TOKEN", None)
+            for cap in ("bond_holdings", "industry_allocations", "profile"):
+                with self.subTest(capability=cap):
+                    chain = fund_data.build_providers("auto", capability=cap)
+                    names = [p.name for p in chain]
+                    self.assertEqual(
+                        names[0], "akshare",
+                        f"{cap}: expected akshare first, got {names}",
+                    )
+                    self.assertIn(
+                        "investoday", names,
+                        f"{cap}: investoday must be in chain as fallback, got {names}",
+                    )
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_build_providers_logs_warning_when_provider_init_fails_in_auto(self):
         """When auto mode cannot init a provider, it must not silently drop the

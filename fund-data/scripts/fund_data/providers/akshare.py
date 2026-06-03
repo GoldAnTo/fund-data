@@ -368,11 +368,24 @@ class AkshareProvider:
     ) -> list[dict[str, Any]]:
         year = report_year or str(datetime.now().year - 1)
         rows = []
-        for item in normalizers._records(
-            self.ak.fund_portfolio_industry_allocation_em(
-                symbol=normalizers.normalize_fund_code(code), date=year
+        try:
+            records = normalizers._records(
+                self.ak.fund_portfolio_industry_allocation_em(
+                    symbol=normalizers.normalize_fund_code(code), date=year
+                )
             )
-        ):
+        except Exception:
+            # AkShare v1.18.64 raises ``ValueError: Length
+            # mismatch`` because upstream Eastmoney renamed the
+            # industry breakdown column and ``reset_index()`` no
+            # longer produces a 1-col index that matches the
+            # replacement column list. The data plane must not
+            # crash the bulk runner on this -- the chain falls
+            # through to Investoday (when ``INVESTODAY_API_KEY``
+            # is set) and otherwise returns ``[]`` so the caller
+            # can move on to the next fund.
+            return []
+        for item in records:
             industry = normalizers._first_value(
                 item,
                 "行业类别",

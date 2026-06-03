@@ -78,7 +78,28 @@ def build_providers_full(
     """
     names: list[str]
     if provider == PROVIDER_AUTO:
+        # Provider chain order is *capability-aware*: AkShare is
+        # the biggest dataset for stock/bond/industry/fee/etc.
+        # holdings, so it has to be the PRIMARY (not the
+        # fallback) -- otherwise an empty Investoday response
+        # would short-circuit the chain and we'd never see the
+        # AkShare rows that the bulk backfill actually wants.
+        # For NAV / snapshot / search / fund_list the order
+        # stays Eastmoney-first (those are Eastmoney's domain).
         names = []
+        if capability in {
+            "stock_holdings",
+            "profile",
+            "bond_holdings",
+            "industry_allocations",
+            "fee_structures",
+            "dividends",
+            "splits",
+            "fund_managers",
+        }:
+            names.append(PROVIDER_AKSHARE)
+        else:
+            names.append(PROVIDER_EASTMONEY)
         if os.environ.get("INVESTODAY_API_KEY") or os.environ.get("INVESTDATA_API_KEY"):
             names.append(PROVIDER_INVESTODAY)
         if os.environ.get("TUSHARE_TOKEN"):
@@ -93,11 +114,17 @@ def build_providers_full(
             "splits",
             "fund_managers",
         }:
-            # AkShare covers all of these; fall back to Eastmoney if missing.
-            names.extend([PROVIDER_AKSHARE, PROVIDER_EASTMONEY])
+            # Eastmoney is the last-resort fallback; it has
+            # methods for stock/snapshot/search/fund_list but
+            # not for the AkShare-only domains. The chain's
+            # ``getattr`` AttributeError on the missing
+            # ``bond_holdings`` / ``industry_allocations``
+            # methods gets logged as a per-call failure and the
+            # caller sees "all providers failed" -- not a
+            # crash, just an empty result.
+            names.append(PROVIDER_EASTMONEY)
         else:
-            # NAV / snapshot / search / fund_list are well-served by Eastmoney.
-            names.extend([PROVIDER_EASTMONEY, PROVIDER_AKSHARE])
+            names.append(PROVIDER_AKSHARE)
     else:
         names = [provider]
 

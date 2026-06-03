@@ -100,10 +100,19 @@ class BuildProvidersCapabilityMatrixTests(unittest.TestCase):
         names = [p.name for p in chain]
         self.assertIn("eastmoney", names)
 
-    def test_auto_prepends_investoday_when_canonical_key_is_set(self) -> None:
+    def test_auto_includes_investoday_when_canonical_key_is_set(self) -> None:
         # ``INVESTODAY_API_KEY`` is the canonical documented name.
         # The legacy ``INVESTDATA_API_KEY`` must not be required for
-        # auto mode to try Investoday first.
+        # auto mode to try Investoday at all.
+        # Note: Investoday is in the chain but is *not* the
+        # primary provider -- for the holdings capabilities
+        # (profile / bond / industry / etc.) AkShare is the
+        # primary because it owns the bulk of the data, and
+        # Investoday is the fallback when AkShare v1.18.64
+        # schema drift returns empty. This is a deliberate
+        # inversion of the previous "Investoday-first" order;
+        # the contract is "Investoday is in the chain" not
+        # "Investoday is the first link".
         saved = {
             "INVESTODAY_API_KEY": os.environ.get("INVESTODAY_API_KEY"),
             "INVESTDATA_API_KEY": os.environ.get("INVESTDATA_API_KEY"),
@@ -119,7 +128,10 @@ class BuildProvidersCapabilityMatrixTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
         names = [p.name for p in chain]
-        self.assertEqual(names[0], "investoday")
+        self.assertIn("investoday", names)
+        # AkShare owns the bulk of the holdings data and is
+        # the primary link; Investoday is the fallback.
+        self.assertEqual(names[0], "akshare")
 
     def test_explicit_unknown_provider_raises(self) -> None:
         # An unknown provider id is a hard error, not a
