@@ -63,6 +63,7 @@ EXPECTED_EMPTY = {
 
 
 DATASET_RULES = {
+    "funds": {"table": "funds", "priority": "P0", "tool": "fund_search", "cli": "search", "batch_flag": None},
     "fund_profiles": {"table": "fund_profiles", "priority": "P1", "tool": "fund_profile", "cli": "profile", "batch_flag": "--include-profile"},
     "nav_history": {"table": "nav_history", "priority": "P1", "tool": "fund_nav_history", "cli": "nav", "batch_flag": "", "stale_column": "fetched_at"},
     "snapshots": {"table": "snapshots", "priority": "P1", "tool": "fund_snapshot", "cli": "snapshot", "batch_flag": None, "stale_column": "fetched_at"},
@@ -171,6 +172,32 @@ def _entry(
     }
 
 
+def _p0_fund_not_in_universe(code: str) -> dict[str, Any]:
+    """P0 entry for a fund_code the caller asked about that is not
+    in the local ``funds`` table. The audit cannot classify any
+    dataset for an unknown fund, so the recommended action is to
+    bootstrap the universe with a search/list call. This entry is
+    the only place P0 is emitted -- everything else is P1+."""
+    return {
+        "priority": "P0",
+        "score": 1000,
+        "fund_code": code,
+        "fund_name": "",
+        "fund_type": "",
+        "dataset": "funds",
+        "issue_type": "fund_not_in_universe",
+        "severity": "error",
+        "reason": (
+            f"fund_code {code} is not in the local funds table; "
+            "cannot audit datasets until it is bootstrapped."
+        ),
+        "recommended_mcp_tool": "fund_search",
+        "recommended_mcp_arguments": {"keyword": code, "limit": 5},
+        "recommended_cli": f"fund-data/scripts/fund_cli.py search {code}",
+        "auto_fill_executed": False,
+    }
+
+
 def _batch_suggestions(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Group the (P1 / P2 / P3) queue by (priority, dataset) and emit
     one ``batch-sync`` recommendation per group. P4 / structural-empty
@@ -234,7 +261,20 @@ def build_self_audit_queue(
             if rule.get("stale_column")
         }
 
-    queue: list[dict[str, Any]] = []
+    # P0: if the caller explicitly asked for fund codes that are not
+    # in the local ``funds`` table, surface each as a P0 entry so the
+    # agent knows the audit is incomplete by design. Without this
+    # branch, ``health-check 999999`` would silently return an empty
+    # queue, which the playbook explicitly forbids.
+    p0_entries: list[dict[str, Any]] = []
+    if codes:
+        normalized_codes = [normalize_fund_code(c) for c in codes]
+        existing_codes = {row["fund_code"] for row in funds}
+        for code in normalized_codes:
+            if code not in existing_codes:
+                p0_entries.append(_p0_fund_not_in_universe(code))
+
+    queue: list[dict[str, Any]] = list(p0_entries)
     structural_count = 0
     for fund in funds:
         for dataset, rule in DATASET_RULES.items():
@@ -282,8 +322,15 @@ def build_self_audit_queue(
 
     queue.sort(key=lambda item: (-int(item["score"]), item["fund_code"], item["dataset"]))
     limited = queue[:limit] if limit else queue
+    # total_funds = funds the audit actually covered. If the caller
+    # passed explicit codes, count every requested code (existing +
+    # missing) so the summary reflects the full request.
+    if codes:
+        total_funds = len({normalize_fund_code(c) for c in codes})
+    else:
+        total_funds = len(funds)
     summary = {
-        "total_funds": len(funds),
+        "total_funds": total_funds,
         "queue_size": len(queue),
         "returned": len(limited),
         "p0": sum(1 for item in queue if item["priority"] == "P0"),

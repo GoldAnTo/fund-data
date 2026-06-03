@@ -239,6 +239,44 @@ class CompletionPlanTests(unittest.TestCase):
         self.assertGreaterEqual(plan["summary"]["estimated_minutes"], 1)
         self.assertEqual(plan["summary"]["estimated_provider_calls"], 8)
 
+    def test_snapshots_no_batch_primitive_lands_in_blocked_with_fallback(self):
+        """Regression for Bug 3 / 2026-06-03 completion: a
+        snapshots-P1 queue used to produce ``batches=[]`` and
+        ``blocked=[]`` with the codes only visible in
+        ``skipped_for_budget``. The plan must now surface each
+        snapshot code as a blocked entry with a single-fund CLI
+        fallback (using the actual ``snapshot`` subcommand, not
+        the dataset key ``snapshots``)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            queue_path = _write_queue(
+                tmp,
+                [
+                    _queue_item("110022", "snapshots", "P1"),
+                    _queue_item("110023", "snapshots", "P1"),
+                ],
+            )
+            plan = fund_data.build_completion_plan(queue_path=queue_path)
+
+        # No batch was scheduled for snapshots.
+        self.assertEqual(plan["batches"], [])
+        # Every snapshot code is in the blocked list with a usable
+        # fallback CLI.
+        blocked_codes = {item["fund_code"] for item in plan["blocked"]}
+        self.assertEqual(blocked_codes, {"110022", "110023"})
+        for item in plan["blocked"]:
+            self.assertEqual(item["dataset"], "snapshots")
+            self.assertEqual(item["priority"], "P1")
+            self.assertIn("no batch-sync primitive", item["reason"])
+            # Use the *CLI subcommand name* (singular ``snapshot``)
+            # not the dataset key.
+            self.assertIn("fund_cli.py snapshot ", item["fallback_cli"])
+            self.assertNotIn("fund_cli.py snapshots ", item["fallback_cli"])
+        # The codes are still visible somewhere -- the operator
+        # cannot lose track of them.
+        self.assertEqual(plan["summary"]["blocked"], 2)
+        self.assertEqual(plan["summary"]["planned_items"], 0)
+
 
 class CompletionPolicyTests(unittest.TestCase):
     def test_load_completion_policy_applies_safe_defaults(self):

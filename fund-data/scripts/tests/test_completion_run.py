@@ -334,6 +334,67 @@ class CompletionRunnerExecutionTests(unittest.TestCase):
         stdout_log = run_root / "logs" / "openclaw-20260603T000000Z-fund_profiles-p1.stdout.log"
         self.assertTrue(stdout_log.exists())
 
+    def test_provider_calls_is_not_double_counted(self):
+        """Regression for Bug 2 / 2026-06-03 completion: the runner
+        used to pre-fill ``summary.provider_calls`` from the plan's
+        ``estimated_provider_calls`` and then add it again as each
+        batch executed, so a 2-code plan reported provider_calls=4.
+        After the fix the field is purely the sum of actually
+        executed batch sizes."""
+        plan = _plan_payload()
+        # 2 codes per batch, 1 batch -> real provider_calls = 2.
+        plan["batches"] = [
+            {**plan["batches"][0], "batch_id": "openclaw-b1", "codes": ["000001", "000002"]}
+        ]
+        plan["summary"]["estimated_provider_calls"] = 2
+        plan_path = self.tmp / "plan.json"
+        plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+
+        with mock.patch.object(
+            completion.subprocess, "run",
+            return_value=subprocess.CompletedProcess(args="x", returncode=0, stdout="ok", stderr=""),
+        ):
+            execution = fund_data.run_completion_plan(
+                plan_path=plan_path, confirm_execute=True
+            )
+        self.assertEqual(execution["summary"]["provider_calls"], 2)
+
+    def test_provider_calls_refusal_does_not_leak_estimated(self):
+        """The budget-overflow refusal path used to set
+        ``provider_calls`` to the planned estimate and then return,
+        so the execution report read as if the run had already
+        touched the database even though it was a refusal. The
+        post-fix value stays at 0 for refusals."""
+        plan = _plan_payload()
+        plan["batches"] = [
+            {**plan["batches"][0], "batch_id": "openclaw-b1", "codes": ["000001"]}
+        ]
+        plan["summary"]["estimated_provider_calls"] = 999
+        plan_path = self.tmp / "plan.json"
+        plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+        config = self.tmp / "policy.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "mode": "assisted",
+                    "budgets": {"max_provider_calls_per_run": 10},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with mock.patch.object(completion.subprocess, "run") as mock_run:
+            execution = fund_data.run_completion_plan(
+                plan_path=plan_path,
+                config_path=config,
+                confirm_execute=True,
+            )
+        self.assertFalse(execution["executed"])
+        self.assertIn("budget", execution["refusal_reason"].lower())
+        # Bug 2 regression: the refusal path must not pre-fill
+        # provider_calls with the planned estimate.
+        self.assertEqual(execution["summary"]["provider_calls"], 0)
+        mock_run.assert_not_called()
+
 
 class CompletionVerifyTests(unittest.TestCase):
     def test_verify_completion_run_reports_improvement(self):

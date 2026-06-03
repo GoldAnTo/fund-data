@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .paths import default_db_path
+from .self_audit import DATASET_RULES as _AUDIT_DATASET_RULES
 
 
 logger = logging.getLogger("fund_data.completion")
@@ -207,11 +208,18 @@ def _group_into_batches(
     run_root: Path,
     budgets: dict[str, Any],
     provider_policy: dict[str, str],
+    blocked_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Group planned items by (priority, dataset) into one batch each.
     Apply the per-run fund budget across all batches (a single 100-fund
     budget means we cap the *total* distinct fund codes, not 100 per
-    batch). Return (batches, skipped_for_budget)."""
+    batch). Datasets that have no batch-sync primitive (``snapshots``
+    is the main one today) are written into ``blocked_sink`` so the
+    operator can see them instead of having them silently disappear
+    into ``skipped_for_budget``.
+
+    Return (batches, skipped_for_budget).
+    """
     grouped: dict[tuple[str, str], list[str]] = defaultdict(list)
     for item in planned:
         grouped[(item["priority"], item["dataset"])].append(item["fund_code"])
@@ -267,13 +275,33 @@ def _group_into_batches(
             continue
         batch_flag = BATCH_FLAGS.get(dataset)
         if batch_flag is None:
-            # dataset has no batch-sync primitive (e.g. snapshots in
-            # the current CLI) -- skip but record as blocked so the
-            # operator knows why nothing was scheduled.
-            for code in unique_codes:
-                # not added to used_codes so a future snapshot
-                # batch would still see the request
-                pass
+            # dataset has no batch-sync primitive (snapshots in the
+            # current CLI is the main case). Surface each code as a
+            # blocked entry with a single-fund CLI fallback so the
+            # operator can see the request instead of losing it in
+            # ``skipped_for_budget``.
+            if blocked_sink is not None:
+                # Use the CLI subcommand name from the audit dataset
+                # rules so the fallback uses the right verb
+                # (e.g. ``snapshot`` for the ``snapshots`` dataset),
+                # not the dataset key directly.
+                cli_name = _AUDIT_DATASET_RULES.get(dataset, {}).get(
+                    "cli", dataset
+                )
+                for code in unique_codes:
+                    blocked_sink.append({
+                        "fund_code": code,
+                        "dataset": dataset,
+                        "priority": priority,
+                        "reason": (
+                            f"blocked: dataset '{dataset}' has no batch-sync "
+                            f"primitive; use single-fund CLI instead"
+                        ),
+                        "fallback_cli": (
+                            f"fund-data/scripts/fund_cli.py {cli_name} {code} "
+                            f"--provider auto"
+                        ),
+                    })
             skipped += len(unique_codes)
             continue
         used_codes.update(unique_codes)
@@ -348,12 +376,17 @@ def build_completion_plan(
 
     run_id = _now_utc_compact()
     run_root = Path("fund-data/data/openclaw_runs") / run_id
+    # Datasets that have no batch-sync primitive (e.g. ``snapshots``)
+    # need to be surfaced in the plan's ``blocked`` list so the
+    # operator can see them and run the per-fund fallback CLI;
+    # silently dropping them was a Bug 3 regression.
     batches, skipped = _group_into_batches(
         planned,
         run_id=run_id,
         run_root=run_root,
         budgets=budgets,
         provider_policy=provider_policy,
+        blocked_sink=blocked,
     )
 
     total_calls = sum(len(batch["codes"]) for batch in batches)
@@ -657,13 +690,16 @@ def run_completion_plan(
     # configured ceiling, even when the plan builder approved it.
     # Prefer the plan's own estimate so a hand-edited plan that
     # exceeds the budget is caught even if its batch count is low.
+    # NOTE: we deliberately do *not* write planned_calls into
+    # ``execution['summary']['provider_calls']`` here -- that field
+    # is the actual count after execution, and pre-filling it would
+    # double-count once each batch increments it.
     budgets_pre = policy["budgets"]
     plan_summary = plan.get("summary", {})
     planned_calls = int(
         plan_summary.get("estimated_provider_calls")
         or sum(len(b.get("codes", [])) for b in plan.get("batches", []))
     )
-    execution["summary"]["provider_calls"] = planned_calls
     budget_calls = int(budgets_pre.get("max_provider_calls_per_run", 0))
     if budget_calls and planned_calls > budget_calls:
         execution["refusal_reason"] = (

@@ -74,3 +74,45 @@ class SelfAuditTests(unittest.TestCase):
         item = next(i for i in result["queue"] if i["dataset"] == "nav_history" and i["issue_type"] == "stale")
         self.assertEqual(item["priority"], "P3")
         self.assertEqual(item["severity"], "notice")
+
+    def test_unknown_code_in_explicit_codes_is_p0_with_bootstrap_action(self):
+        """Regression for the Bug 1 / 2026-06-03 audit: when the
+        caller passes an explicit ``codes`` list and one of the
+        codes is not in the local funds table, the audit must emit
+        a P0 entry with a fund_search bootstrap action instead of
+        silently returning an empty queue."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            store = fund_data.FundDataStore(db_path)
+            _seed_fund(store)  # 110022 exists
+
+            result = fund_data.build_self_audit_queue(
+                db_path=db_path, codes=["110022", "999999"]
+            )
+
+        p0 = [item for item in result["queue"] if item["priority"] == "P0"]
+        self.assertEqual(len(p0), 1)
+        item = p0[0]
+        self.assertEqual(item["fund_code"], "999999")
+        self.assertEqual(item["dataset"], "funds")
+        self.assertEqual(item["issue_type"], "fund_not_in_universe")
+        self.assertEqual(item["severity"], "error")
+        self.assertEqual(item["recommended_mcp_tool"], "fund_search")
+        self.assertEqual(item["recommended_mcp_arguments"], {"keyword": "999999", "limit": 5})
+        self.assertIn("search 999999", item["recommended_cli"])
+        # total_funds reflects the caller's request (existing + missing)
+        self.assertEqual(result["summary"]["total_funds"], 2)
+        self.assertEqual(result["summary"]["p0"], 1)
+
+    def test_unknown_code_only_request_returns_p0_only(self):
+        """The simplest reproduction: health-check 999999 with an
+        otherwise empty DB must return p0=1, queue_size=1."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            fund_data.FundDataStore(db_path)  # empty, no funds
+            result = fund_data.check_fund_health("999999", db_path=db_path)
+        self.assertEqual(result["summary"]["total_funds"], 1)
+        self.assertEqual(result["summary"]["queue_size"], 1)
+        self.assertEqual(result["summary"]["p0"], 1)
+        self.assertEqual(len(result["queue"]), 1)
+        self.assertEqual(result["queue"][0]["issue_type"], "fund_not_in_universe")
