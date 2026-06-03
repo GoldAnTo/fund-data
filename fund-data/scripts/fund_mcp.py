@@ -516,8 +516,20 @@ def _call_fund_splits(arguments: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _call_fund_managers(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    code = _optional_str(arguments, "code")
+    # Local-first: when a code is given, hit the fund-centric
+    # ``fund_manager_links`` projection for an O(1) answer; only
+    # fall through to a live provider fetch on miss or when the
+    # caller wants a manager-centric view (no code) -- the
+    # legacy ``fund_managers`` table is keyed on
+    # (manager_name, company, current_fund_codes), so a "list
+    # every manager" call has to read it without a code filter.
+    if code:
+        rows = _local_rows("fund_manager_links", arguments, code)
+        if rows:
+            return rows
     return fund_data.fetch_fund_managers(
-        _optional_str(arguments, "code"), db_path=_db(arguments), provider=_provider(arguments)
+        code, db_path=_db(arguments), provider=_provider(arguments)
     )
 
 

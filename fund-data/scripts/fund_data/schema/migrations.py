@@ -33,6 +33,7 @@ __all__ = [
     "_migration_003_add_fee_structures_discount_fee",
     "_migration_004_add_fee_structures_discount_fee_text",
     "_migration_005_align_column_order",
+    "_migration_006_create_fund_manager_links",
 ]
 
 
@@ -182,12 +183,78 @@ def _migration_005_align_column_order(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migration_006_create_fund_manager_links(conn: sqlite3.Connection) -> None:
+    """v6: add a fund-centric join table for managers.
+
+    The legacy ``fund_managers`` table is keyed on
+    ``(manager_name, company, current_fund_codes)`` -- the natural
+    shape for "list every fund this manager runs". The reverse
+    query ("who manages fund 110022?") has to do a full table scan
+    with ``LIKE '%<code>%'`` because ``current_fund_codes`` is a
+    text column (and despite the name, every row holds a single
+    code -- the column was never populated with comma-separated
+    values in production data).
+
+    This migration adds ``fund_manager_links`` keyed on
+    ``(fund_code, manager_name, company)`` so the reverse query
+    is O(1) via a covering index. The new table is a denormalized
+    projection: same columns as ``fund_managers`` minus
+    ``current_fund_codes``, plus an explicit ``fund_code`` PK
+    column. We backfill from the legacy table so the new index is
+    hot on first open; ongoing writes go through
+    ``FundDataStore.upsert_fund_managers`` which fans out to both
+    tables in the same transaction.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS fund_manager_links (
+            fund_code TEXT NOT NULL,
+            manager_name TEXT NOT NULL,
+            company TEXT,
+            current_funds TEXT,
+            tenure_days INTEGER,
+            current_aum REAL,
+            best_return REAL,
+            source TEXT,
+            fetched_at TEXT NOT NULL,
+            PRIMARY KEY (fund_code, manager_name, company)
+        );
+        CREATE INDEX IF NOT EXISTS idx_fund_manager_links_code
+            ON fund_manager_links(fund_code);
+        """
+    )
+    # Backfill from the legacy table. INSERT OR IGNORE because
+    # the same (fund_code, manager_name, company) triple can
+    # appear more than once with different ``fetched_at`` values
+    # (re-fetches) -- we want the earliest row's other columns
+    # to win on PK conflict (newer writes go through
+    # ``upsert_fund_managers`` which sets ``fetched_at = now``).
+    existing = conn.execute(
+        "SELECT 1 FROM fund_manager_links LIMIT 1"
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO fund_manager_links (
+                fund_code, manager_name, company, current_funds,
+                tenure_days, current_aum, best_return, source, fetched_at
+            )
+            SELECT
+                current_fund_codes, manager_name, company, current_funds,
+                tenure_days, current_aum, best_return, source, fetched_at
+            FROM fund_managers
+            WHERE current_fund_codes <> ''
+            """
+        )
+
+
 MIGRATIONS: list[tuple[int, Any]] = [
     (1, _migration_001_add_industry_allocations_market_value),
     (2, _migration_002_add_fee_structures_fee_text),
     (3, _migration_003_add_fee_structures_discount_fee),
     (4, _migration_004_add_fee_structures_discount_fee_text),
     (5, _migration_005_align_column_order),
+    (6, _migration_006_create_fund_manager_links),
 ]
 
 FUND_DATA_SCHEMA_VERSION = max(version for version, _fn in MIGRATIONS)

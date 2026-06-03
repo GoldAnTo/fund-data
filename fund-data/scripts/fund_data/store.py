@@ -215,6 +215,24 @@ class FundDataStore:
                     fetched_at text not null,
                     primary key (manager_name, company, current_fund_codes)
                 );
+                -- Fund-centric projection of fund_managers. Created in
+                -- migration 6 for O(1) reverse lookup ("who manages
+                -- fund 110022?"). Bootstrap create-table here is for
+                -- brand-new DBs that never run migration 6.
+                create table if not exists fund_manager_links (
+                    fund_code text not null,
+                    manager_name text not null,
+                    company text,
+                    current_funds text,
+                    tenure_days integer,
+                    current_aum real,
+                    best_return real,
+                    source text,
+                    fetched_at text not null,
+                    primary key (fund_code, manager_name, company)
+                );
+                create index if not exists idx_fund_manager_links_code
+                    on fund_manager_links(fund_code);
                 -- Schema migration registry. Bumped by apply_migrations()
                 -- below. The version column here is the *audit log*;
                 -- PRAGMA user_version is the *fast read* of the same
@@ -648,6 +666,45 @@ class FundDataStore:
 
     def upsert_fund_managers(self, rows: list[dict[str, Any]]) -> int:
         now = utc_now()
+        # Build tuples for both tables in one pass so the legacy
+        # manager-centric view AND the new fund-centric projection
+        # land in the same transaction. fan-out keeps
+        # ``fund_manager_links`` hot for the O(1) reverse query
+        # without a separate backfill step.
+        legacy_tuples = []
+        link_tuples = []
+        for row in rows:
+            manager = row.get("manager_name", "")
+            company = row.get("company", "")
+            raw_code = row.get("current_fund_codes", "") or ""
+            current_funds = row.get("current_funds", "")
+            legacy_tuples.append(
+                (
+                    manager, company, raw_code, current_funds,
+                    row.get("tenure_days"), row.get("current_aum"),
+                    row.get("best_return"), row.get("source", ""), now,
+                )
+            )
+            # Only fan out to the fund-centric projection when
+            # ``current_fund_codes`` looks like a real fund code
+            # (``normalize_fund_code`` raises on anything that
+            # doesn't have a 6-digit run). This skips blank rows
+            # from malformed provider responses and avoids
+            # polluting the link table with ``fund_code=''``
+            # rows that would match a ``fund_code = ''`` agent
+            # query by accident.
+            try:
+                fund_code = normalizers.normalize_fund_code(raw_code) if raw_code else ""
+            except ValueError:
+                fund_code = ""
+            if fund_code and manager:
+                link_tuples.append(
+                    (
+                        fund_code, manager, company, current_funds,
+                        row.get("tenure_days"), row.get("current_aum"),
+                        row.get("best_return"), row.get("source", ""), now,
+                    )
+                )
         with self.connect() as conn:
             conn.executemany(
                 """
@@ -663,21 +720,26 @@ class FundDataStore:
                     source=excluded.source,
                     fetched_at=excluded.fetched_at
                 """,
-                [
-                    (
-                        row.get("manager_name", ""),
-                        row.get("company", ""),
-                        row.get("current_fund_codes", ""),
-                        row.get("current_funds", ""),
-                        row.get("tenure_days"),
-                        row.get("current_aum"),
-                        row.get("best_return"),
-                        row.get("source", ""),
-                        now,
-                    )
-                    for row in rows
-                ],
+                legacy_tuples,
             )
+            if link_tuples:
+                conn.executemany(
+                    """
+                    insert into fund_manager_links (
+                        fund_code, manager_name, company, current_funds,
+                        tenure_days, current_aum, best_return, source, fetched_at
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    on conflict(fund_code, manager_name, company) do update set
+                        current_funds=excluded.current_funds,
+                        tenure_days=excluded.tenure_days,
+                        current_aum=excluded.current_aum,
+                        best_return=excluded.best_return,
+                        source=excluded.source,
+                        fetched_at=excluded.fetched_at
+                    """,
+                    link_tuples,
+                )
+        return len(rows)
         return len(rows)
 
     def record_raw_response(self, source: str, request_key: str, raw_text: str) -> None:
@@ -747,14 +809,15 @@ class FundDataStore:
             "raw_responses",
             "sync_runs",
             "sync_failures",
-            "stock_holdings",
             "fund_profiles",
+            "stock_holdings",
             "bond_holdings",
             "industry_allocations",
             "fee_structures",
             "dividends",
             "splits",
             "fund_managers",
+            "fund_manager_links",
         }
         if table not in allowed:
             raise ValueError(f"unsupported table: {table}")
@@ -773,6 +836,7 @@ class FundDataStore:
             "fee_structures",
             "dividends",
             "splits",
+            "fund_manager_links",
         }:
             sql += " where fund_code = ?"
             params = (normalizers.normalize_fund_code(fund_code),)

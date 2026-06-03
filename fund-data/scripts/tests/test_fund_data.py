@@ -1484,6 +1484,151 @@ class FundDataStoreTests(unittest.TestCase):
             incomplete = fund_data.coverage_report(db_path=db_path, only_incomplete=True)
             self.assertEqual({r["fund_code"] for r in incomplete}, {"110022", "000015"})
 
+    def test_upsert_fund_managers_fans_out_to_fund_manager_links(self):
+        """``upsert_fund_managers`` writes both the legacy
+        manager-centric row and the new fund-centric projection so
+        ``fund_manager_links`` is hot for the O(1) reverse query
+        without a separate backfill step. The legacy
+        ``fund_managers`` table must keep working unchanged -- it
+        is the natural shape for "list every fund this manager
+        runs" and several consumers still read it.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = fund_data.FundDataStore(Path(tmpdir) / "fund_data.sqlite")
+            store.upsert_fund_managers(
+                [
+                    {
+                        "manager_name": "萧楠",
+                        "company": "易方达基金",
+                        "current_fund_codes": "110022",
+                        "current_funds": "易方达消费行业股票",
+                        "tenure_days": 4994,
+                        "current_aum": 225.82,
+                        "best_return": 2.7587,
+                        "source": "akshare.fund_manager_em",
+                    },
+                    {
+                        "manager_name": "刘睿聪",
+                        "company": "华夏基金",
+                        "current_fund_codes": "000001",
+                        "current_funds": "华夏成长混合",
+                        "tenure_days": 1251,
+                        "current_aum": 26.61,
+                        "best_return": 0.5827,
+                        "source": "akshare.fund_manager_em",
+                    },
+                    # Empty code must NOT pollute the link table --
+                    # otherwise a `fund_code = ''` agent query would
+                    # accidentally match every malformed row.
+                    {
+                        "manager_name": "test",
+                        "company": "test",
+                        "current_fund_codes": "",
+                        "current_funds": "",
+                        "tenure_days": 0,
+                        "current_aum": 0,
+                        "best_return": 0,
+                        "source": "fake",
+                    },
+                ]
+            )
+
+            # Legacy manager-centric table still works (the new
+            # ``upsert_fund_managers`` fan-out is additive -- the
+            # original row shape is preserved so existing
+            # consumers reading the legacy table see no change).
+            legacy = store.export_table("fund_managers")
+            self.assertEqual(len(legacy), 3)
+            self.assertEqual(
+                {r["manager_name"] for r in legacy}, {"萧楠", "刘睿聪", "test"}
+            )
+
+            # New fund-centric projection is hot and queryable.
+            links = store.export_table("fund_manager_links", fund_code="110022")
+            self.assertEqual(len(links), 1)
+            self.assertEqual(links[0]["manager_name"], "萧楠")
+            self.assertEqual(links[0]["company"], "易方达基金")
+            self.assertEqual(links[0]["current_funds"], "易方达消费行业股票")
+            # Empty-code row was dropped -- assert no blank code
+            # leaked into the projection.
+            all_codes = {
+                r["fund_code"]
+                for r in store.export_table("fund_manager_links")
+            }
+            self.assertNotIn("", all_codes)
+            self.assertEqual(all_codes, {"110022", "000001"})
+
+    def test_fund_manager_links_migration_backfills_from_legacy(self):
+        """Migration 6 must create ``fund_manager_links`` and
+        backfill from existing ``fund_managers`` rows so the
+        reverse query is hot on first open (and not gated on a
+        re-fetch)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Path(tmpdir) / "fund_data.sqlite"
+            # Bootstrap with the bootstrap-create path (which
+            # creates fund_managers but not fund_manager_links on
+            # a fresh DB), insert a legacy row directly, then
+            # simulate "migration hasn't run yet" by dropping the
+            # new table if it exists.
+            store = fund_data.FundDataStore(str(db))
+            with sqlite3.connect(str(db)) as conn:
+                conn.execute(
+                    """
+                    insert into fund_managers (
+                        manager_name, company, current_fund_codes, current_funds,
+                        tenure_days, current_aum, best_return, source, fetched_at
+                    ) values ('萧楠', '易方达基金', '110022', '易方达消费行业股票',
+                              4994, 225.82, 2.7587, 'akshare', '2026-06-01T17:16:21+00:00')
+                    """
+                )
+                conn.execute("drop table if exists fund_manager_links")
+                # Rewind user_version so the migration will re-run
+                # on next open.
+                conn.execute("PRAGMA user_version = 5")
+
+            # Re-open -- should apply migration 6 and backfill.
+            fund_data.FundDataStore(str(db)).ensure_schema()
+            with sqlite3.connect(str(db)) as conn:
+                rows = conn.execute(
+                    "select * from fund_manager_links where fund_code = ?",
+                    ("110022",),
+                ).fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0][1], "萧楠")  # manager_name column
+            self.assertEqual(rows[0][2], "易方达基金")  # company
+
+    def test_fund_manager_links_o1_lookup_vs_legacy_scan(self):
+        """The whole point of the projection: an O(1) index hit
+        on ``fund_code`` rather than a full table scan with
+        ``LIKE '%<code>%'``. Verified with EXPLAIN QUERY PLAN so
+        the test fails loudly if a future schema change
+        accidentally re-introduces the SCAN path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = fund_data.FundDataStore(Path(tmpdir) / "fund_data.sqlite")
+            store.upsert_fund_managers(
+                [
+                    {
+                        "manager_name": f"mgr_{i}",
+                        "company": f"co_{i}",
+                        "current_fund_codes": "110022" if i == 0 else f"99999{i:02d}",
+                        "current_funds": f"fund_{i}",
+                        "tenure_days": 1,
+                        "current_aum": 1.0,
+                        "best_return": 0.1,
+                        "source": "fake",
+                    }
+                    for i in range(5)
+                ]
+            )
+            db_path = str(Path(tmpdir) / "fund_data.sqlite")
+            with sqlite3.connect(db_path) as conn:
+                plan = conn.execute(
+                    "EXPLAIN QUERY PLAN select * from fund_manager_links where fund_code = ?",
+                    ("110022",),
+                ).fetchall()
+            joined = " ".join(row[3] for row in plan)
+            self.assertIn("USING INDEX", joined, f"expected index scan, got plan: {plan}")
+
 
 class SchemaMigrationTests(unittest.TestCase):
     """``FundDataStore.ensure_schema`` runs a registered migration

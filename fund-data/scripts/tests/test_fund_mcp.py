@@ -236,6 +236,99 @@ class FundMcpProtocolTests(unittest.TestCase):
         self.assertFalse(response["result"]["isError"])
         self.assertEqual(response["result"]["structuredContent"], refreshed)
 
+    def test_known_code_managers_uses_local_links_before_provider_api(self):
+        """`_call_fund_managers` should hit the new
+        ``fund_manager_links`` projection for O(1) lookup on
+        known codes, only falling through to the provider chain
+        when the local table has no row for the requested code."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            store = fund_mcp.fund_data.FundDataStore(db_path)
+            store.upsert_fund_managers(
+                [
+                    {
+                        "manager_name": "萧楠",
+                        "company": "易方达基金",
+                        "current_fund_codes": "110022",
+                        "current_funds": "易方达消费行业股票",
+                        "tenure_days": 4994,
+                        "current_aum": 225.82,
+                        "best_return": 2.7587,
+                        "source": "akshare.fund_manager_em",
+                    }
+                ]
+            )
+
+            with patch.object(
+                fund_mcp.fund_data,
+                "fetch_fund_managers",
+                side_effect=AssertionError("provider ran"),
+            ):
+                response = fund_mcp.handle_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 10,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "fund_managers",
+                            "arguments": {"code": "110022", "db": str(db_path)},
+                        },
+                    }
+                )
+
+        result = response["result"]
+        self.assertFalse(result["isError"])
+        # List responses are wrapped in a ``{"rows": [...],
+        # "count": N}`` envelope by the protocol layer; the
+        # single-row ``fund_profile`` response is unwrapped. Read
+        # ``rows`` explicitly so the assertion matches the
+        # shape agents actually consume.
+        rows = result["structuredContent"]["rows"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["manager_name"], "萧楠")
+        self.assertEqual(rows[0]["fund_code"], "110022")
+
+    def test_unknown_code_managers_falls_through_to_provider(self):
+        """Local-first is a hit-or-miss optimization: when the
+        local links table has no row, the provider chain still
+        runs (this is the same behavior as ``fund_profile``)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            fund_mcp.fund_data.FundDataStore(db_path)  # bootstrap only
+            fetched = [
+                {
+                    "manager_name": "test_manager",
+                    "company": "test_co",
+                    "current_fund_codes": "999999",
+                    "current_funds": "test_fund",
+                    "tenure_days": 1,
+                    "current_aum": 1.0,
+                    "best_return": 0.1,
+                    "source": "provider.test",
+                }
+            ]
+            with patch.object(
+                fund_mcp.fund_data, "fetch_fund_managers", return_value=fetched
+            ) as mock_fetch:
+                response = fund_mcp.handle_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 11,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "fund_managers",
+                            "arguments": {"code": "999999", "db": str(db_path)},
+                        },
+                    }
+                )
+
+        mock_fetch.assert_called_once_with(
+            "999999", db_path=str(db_path), provider="auto"
+        )
+        self.assertEqual(
+            response["result"]["structuredContent"]["rows"], fetched
+        )
+
     def test_stdio_entrypoint_reads_newline_delimited_json_rpc(self):
         message = {
             "jsonrpc": "2.0",

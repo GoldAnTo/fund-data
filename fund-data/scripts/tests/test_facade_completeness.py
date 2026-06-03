@@ -93,10 +93,9 @@ class ProviderIdConstantsTests(unittest.TestCase):
 
 
 class SchemaExportsTests(unittest.TestCase):
-    """The five schema migrations are part of the contract:
-    a future migration in ``fund_data.schema.migrations`` that
-    is NOT in the facade is a documentation / agent-contract
-    bug."""
+    """The schema migrations are part of the contract: a future
+    migration in ``fund_data.schema.migrations`` that is NOT in
+    the facade is a documentation / agent-contract bug."""
 
     EXPECTED = (
         "_migration_001_add_industry_allocations_market_value",
@@ -104,6 +103,7 @@ class SchemaExportsTests(unittest.TestCase):
         "_migration_003_add_fee_structures_discount_fee",
         "_migration_004_add_fee_structures_discount_fee_text",
         "_migration_005_align_column_order",
+        "_migration_006_create_fund_manager_links",
     )
 
     def test_each_migration_appears_in_all(self) -> None:
@@ -111,12 +111,16 @@ class SchemaExportsTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn(name, fund_data.__all__)
 
-    def test_schema_version_is_five(self) -> None:
-        # Migration 5 is the canonical-order rebuild; the
-        # version constant must match the highest migration
-        # id in MIGRATIONS.
-        self.assertEqual(fund_data.FUND_DATA_SCHEMA_VERSION, 5)
-        self.assertEqual(fund_data.FUND_DATA_SCHEMA_VERSION, max(v for v, _ in fund_data.MIGRATIONS))
+    def test_schema_version_matches_highest_migration(self) -> None:
+        # ``FUND_DATA_SCHEMA_VERSION`` is computed from
+        # ``MIGRATIONS`` -- adding a new migration bumps it
+        # automatically. The constant is a public-facing agent
+        # contract (see ``fund_data/__init__.py``) so this test
+        # pins that the highest id and the constant agree.
+        self.assertEqual(
+            fund_data.FUND_DATA_SCHEMA_VERSION,
+            max(v for v, _ in fund_data.MIGRATIONS),
+        )
 
 
 class PublicEntryPointsTests(unittest.TestCase):

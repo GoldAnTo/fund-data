@@ -52,7 +52,7 @@ class ConstructorTests(unittest.TestCase):
                 "sync_runs", "sync_failures", "stock_holdings",
                 "fund_profiles", "bond_holdings", "industry_allocations",
                 "fee_structures", "dividends", "splits",
-                "fund_managers",
+                "fund_managers", "fund_manager_links",
             ):
                 # We only need a no-op check that the
                 # SQL we generate in ``store`` references
@@ -77,7 +77,7 @@ class ConstructorTests(unittest.TestCase):
                     "sync_runs", "sync_failures", "stock_holdings",
                     "fund_profiles", "bond_holdings", "industry_allocations",
                     "fee_structures", "dividends", "splits",
-                    "fund_managers",
+                    "fund_managers", "fund_manager_links",
                 ):
                     with self.subTest(table=table):
                         self.assertIn(table, names)

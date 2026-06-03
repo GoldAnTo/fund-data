@@ -75,7 +75,7 @@ from .paths import (
     utc_now,
 )
 
-# --- schema migrations (5 schema versions) ---
+# --- schema migrations ---
 from .schema.migrations import (
     FUND_DATA_SCHEMA_VERSION,
     MIGRATIONS,
@@ -84,6 +84,7 @@ from .schema.migrations import (
     _migration_003_add_fee_structures_discount_fee,
     _migration_004_add_fee_structures_discount_fee_text,
     _migration_005_align_column_order,
+    _migration_006_create_fund_manager_links,
 )
 
 # --- normalizers (only ``normalize_fund_code`` is public; the rest
@@ -183,6 +184,7 @@ __all__ = [
     "_migration_003_add_fee_structures_discount_fee",
     "_migration_004_add_fee_structures_discount_fee_text",
     "_migration_005_align_column_order",
+    "_migration_006_create_fund_manager_links",
     # normalizers
     "_clean_text",
     "_extract_payload_records",
