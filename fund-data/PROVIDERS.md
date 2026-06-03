@@ -109,6 +109,10 @@ safe to run alongside the main backfill (it only writes to the
 `build_providers("auto", capability=...)` now produces a chain that
 matches the workload:
 
+For `fetch_nav_history`, this chain runs only after the resolved
+OSS/local `nav_history` cache is missing or stale, unless the caller
+passes `cache=False` or `fund_cli.py nav --refresh`.
+
 | Capability | Order (first try → last try) |
 |---|---|
 | `fund_list`, `search`, `nav_history`, `snapshot` | Investoday/Tushare if keyed → Eastmoney → AkShare |

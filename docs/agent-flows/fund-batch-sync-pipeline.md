@@ -70,7 +70,7 @@ flowchart TD
     L1 -- None/empty --> L2b[Treat as soft skip<br/>back-end share class]
     L2 -- ok  --> L3[upsert_funds<br/>funds table]
     L2 -- err --> L3a[record_dataset_error profile<br/>continue]
-    L3 --> L4[fetch_nav_history<br/>Eastmoney F10DataApi]
+    L3 --> L4[fetch_nav_history<br/>cache first, then provider chain]
     L4 --> L5[for each include_* flag:<br/>fetch_* with try/except]
     L5 -- ok   --> L6[persist rows to table]
     L5 -- err  --> L7[record_dataset_error<br/>continue]
@@ -164,7 +164,7 @@ flowchart TD
                      ② fetch_profile       (if include_profile)
                         err  → record_dataset_error, continue
                      ③ upsert_funds        (funds table by PK)
-                     ④ fetch_nav_history   (Eastmoney F10DataApi)
+                     ④ fetch_nav_history   (cache first, then provider chain)
                      ⑤ for each include_* flag:
                           fetch_*(code, report_year, ...)
                           err → record_dataset_error, continue
@@ -327,7 +327,7 @@ The capability ladder, in order:
 | 1 | `fetch_snapshot` | Eastmoney `pingzhongdata/{code}.js` | **Hard fail**: empty body → soft skip (back-end share class), parse error → raise |
 | 2 | `fetch_profile` (if `include_profile`) | AkShare `fund_overview_em` / Tushare / Investoday | **Soft fail**: `record_dataset_error('profile', exc)`, continue |
 | 3 | `upsert_funds` | Insert/update one row in `funds` by `fund_code` PK | Hard fail if the SQL itself fails (rare) |
-| 4 | `fetch_nav_history` | Eastmoney `F10DataApi.aspx` | **Hard fail**: this is the second hard-fail step |
+| 4 | `fetch_nav_history` | OSS/local `nav_history` cache, then provider chain on miss/stale | **Hard fail**: cache miss/stale plus provider failure is the second hard-fail step |
 | 5 | `fetch_stock_holdings` (if `include_holdings`) | AkShare `fund_portfolio_hold_em` | Soft fail |
 | 6 | `fetch_bond_holdings` (if `include_bonds`) | AkShare `fund_portfolio_bond_hold_em` | Soft fail |
 | 7 | `fetch_industry_allocations` (if `include_industries`) | AkShare `fund_portfolio_industry_allocation_em` | Soft fail |

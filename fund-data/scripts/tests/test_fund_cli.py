@@ -169,6 +169,19 @@ class FundCliTests(unittest.TestCase):
 
         self.assertEqual(parsed.provider, "tushare")
 
+    def test_nav_refresh_flag_skips_local_cache(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            with mock.patch.object(
+                fund_cli.fund_data,
+                "fetch_nav_history",
+                return_value=[{"nav_date": "2024-01-31", "unit_nav": 4.0}],
+            ) as mock_fetch, redirect_stdout(io.StringIO()):
+                exit_code = fund_cli.main(["nav", "110022", "--db", str(db_path), "--refresh"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertFalse(mock_fetch.call_args.kwargs["cache"])
+
     def test_cli_bootstraps_cloud_for_default_data_commands(self):
         args = fund_cli.build_parser().parse_args(["search", "沪深300"])
         with mock.patch.object(fund_cli.fund_cloud, "ensure_project_bundle") as mock_bootstrap:

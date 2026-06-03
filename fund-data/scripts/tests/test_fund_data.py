@@ -785,6 +785,103 @@ class FundDataStoreTests(unittest.TestCase):
             self.assertEqual([row["nav_date"] for row in rows], ["2024-01-31", "2024-01-30"])
             self.assertNotIn("fetched_at", rows[0])
 
+    def test_fetch_nav_history_refreshes_when_local_rows_are_missing(self):
+        class RefreshProvider:
+            name = "refresh"
+
+            def __init__(self):
+                self.calls = 0
+
+            def nav_history(self, code, **kwargs):
+                self.calls += 1
+                return [
+                    {
+                        "nav_date": "2024-01-31",
+                        "unit_nav": 4.0,
+                        "accumulated_nav": 4.1,
+                        "daily_growth_rate": 0.01,
+                        "source": "refresh.nav",
+                    }
+                ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            provider = RefreshProvider()
+
+            with patch.object(fund_data, "build_providers", return_value=[provider]):
+                rows = fund_data.fetch_nav_history(
+                    "110022",
+                    start_date="2024-01-31",
+                    end_date="2024-01-31",
+                    per=1,
+                    db_path=db_path,
+                )
+
+            self.assertEqual(provider.calls, 1)
+            self.assertEqual(rows[0]["unit_nav"], 4.0)
+            self.assertEqual(
+                fund_data.FundDataStore(db_path).select_nav_history("110022", per=1)[0]["source"],
+                "refresh.nav",
+            )
+
+    def test_fetch_nav_history_refreshes_when_local_rows_are_stale(self):
+        class RefreshProvider:
+            name = "refresh"
+
+            def __init__(self):
+                self.calls = 0
+
+            def nav_history(self, code, **kwargs):
+                self.calls += 1
+                return [
+                    {
+                        "nav_date": "2024-01-31",
+                        "unit_nav": 4.0,
+                        "accumulated_nav": 4.1,
+                        "daily_growth_rate": 0.01,
+                        "source": "refresh.nav",
+                    }
+                ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "fund_data.sqlite"
+            store = fund_data.FundDataStore(db_path)
+            store.upsert_nav_history(
+                "110022",
+                [
+                    {
+                        "nav_date": "2024-01-31",
+                        "unit_nav": 1.0,
+                        "accumulated_nav": 1.1,
+                        "daily_growth_rate": 0.001,
+                        "source": "local.nav",
+                    }
+                ],
+            )
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    "update nav_history set fetched_at = ? where fund_code = ?",
+                    ("2000-01-01T00:00:00+00:00", "110022"),
+                )
+                conn.commit()
+
+            provider = RefreshProvider()
+            with patch.object(fund_data, "build_providers", return_value=[provider]):
+                rows = fund_data.fetch_nav_history(
+                    "110022",
+                    start_date="2024-01-31",
+                    end_date="2024-01-31",
+                    per=1,
+                    db_path=db_path,
+                )
+
+            self.assertEqual(provider.calls, 1)
+            self.assertEqual(rows[0]["unit_nav"], 4.0)
+            self.assertEqual(
+                fund_data.FundDataStore(db_path).select_nav_history("110022", per=1)[0]["source"],
+                "refresh.nav",
+            )
+
     def test_store_upserts_stock_holdings(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = fund_data.FundDataStore(Path(tmpdir) / "fund_data.sqlite")

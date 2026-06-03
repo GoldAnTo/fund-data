@@ -242,7 +242,7 @@ The 17 tools, grouped by what they do:
 | Tool | Args | Capability |
 |---|---|---|
 | `fund_snapshot` | `code` (required) | Eastmoney `pingzhongdata` |
-| `fund_nav_history` | `code` (required), `start_date?`, `end_date?`, `page?`, `per?` | Eastmoney `F10DataApi` |
+| `fund_nav_history` | `code` (required), `start_date?`, `end_date?`, `page?`, `per?` | OSS/local `nav_history` cache, then provider chain on miss/stale |
 | `fund_profile` | `code` (required) | AkShare / Tushare / Investoday |
 | `fund_stock_holdings` | `code` (required), `report_year?` | AkShare `fund_portfolio_hold_em` |
 | `fund_bond_holdings` | `code` (required), `report_year?` | AkShare `fund_portfolio_bond_hold_em` |

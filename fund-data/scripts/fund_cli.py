@@ -157,6 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
     nav.add_argument("--end-date")
     nav.add_argument("--page", type=int, default=1)
     nav.add_argument("--per", type=int, default=20)
+    nav.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Skip the local/OSS NAV cache and refresh from the provider chain.",
+    )
     _add_common_db_arg(nav)
     _add_offline_arg(nav)
     _add_provider_arg(nav)
@@ -529,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
                 db_path=args.db,
                 raw_text=_read_offline_raw(args.offline_raw),
                 provider=args.provider,
+                cache=not args.refresh,
             )
             _print_json(rows)
             return 0

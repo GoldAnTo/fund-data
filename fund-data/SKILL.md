@@ -33,6 +33,11 @@ MCP, and direct Python helper calls default to the project OSS query
 bundle when `FUND_DATA_DB` is unset. Only fall back to live providers /
 API calls when OSS is unavailable, `FUND_DATA_AUTO_PULL=0`, or the user
 explicitly sets `FUND_DATA_DB` / `--db`.
+Historical NAV lookups are read-through: `fetch_nav_history` reads the
+resolved OSS/local SQLite `nav_history` table first, then refreshes from
+the provider chain only when rows are missing or stale. Use
+`fund_cli.py nav --refresh` or `fetch_nav_history(cache=False)` to force
+a live provider refresh.
 
 The first version uses no-key Eastmoney public endpoints and optional AkShare fallback. If the user provides an Investoday API key or asks for provider-catalog endpoints such as benchmark returns, manager data, or fund categories, use the existing financial-data API workflow as the higher-fidelity source and keep this skill's SQLite schema as the local persistence layer.
 
@@ -46,6 +51,7 @@ python3 scripts/fund_cli.py cloud status
 python3 scripts/fund_cli.py list --provider auto --limit 20
 python3 scripts/fund_cli.py search 沪深300
 python3 scripts/fund_cli.py nav 110022 --start-date 2024-01-01 --end-date 2024-01-31
+python3 scripts/fund_cli.py nav 110022 --refresh
 python3 scripts/fund_cli.py snapshot 110022
 python3 scripts/fund_cli.py profile 110022 --provider akshare
 python3 scripts/fund_cli.py holdings 110022 --provider akshare --report-year 2024
@@ -84,7 +90,7 @@ python3 scripts/fund_cli.py profile 110022 --provider akshare
 python3 scripts/fund_cli.py profile 110022 --provider tushare
 ```
 
-`auto` tries `investoday` first when `INVESTODAY_API_KEY` (or the legacy `INVESTDATA_API_KEY`) is set. Without a key, search/NAV use Eastmoney first and fall back to AkShare if installed. Holdings, profile, industry, fee, dividend/split, and manager commands use AkShare-backed free sources until a structured provider is configured.
+`auto` tries `investoday` first when `INVESTODAY_API_KEY` (or the legacy `INVESTDATA_API_KEY`) is set. Without a key, search/NAV refreshes use Eastmoney first and fall back to AkShare if installed. Holdings, profile, industry, fee, dividend/split, and manager commands use AkShare-backed free sources until a structured provider is configured.
 
 AkShare is optional. Install it into the Python environment used to run the CLI:
 

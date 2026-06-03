@@ -1,6 +1,6 @@
 # fund-data Architecture
 
-> Last updated: 2026-06-01 (post P0 audit fixes — see CHANGELOG 0.1.0→0.2.0).
+> Last updated: 2026-06-03 (NAV read-through cache behavior).
 
 This document is the contributor-facing architecture reference for the
 `fund-data` skill. It is intentionally separate from `SKILL.md`
@@ -75,6 +75,15 @@ Two storage tiers on purpose:
 `fund_data.default_db_path()` prefers the cloud bundle when one
 is configured, falling back to the local full DB.
 
+`fund_data.fetch_nav_history()` is a read-through path. With no
+`raw_text` or explicit `client`, it first reads `nav_history` from
+the resolved SQLite DB (OSS query bundle when present, otherwise the
+local DB). If no matching rows are present, or any matching row is
+older than `cache_max_age_hours` (24 h by default), it falls through
+to the provider chain and writes the refreshed rows back. Use
+`cache=False` in Python or `fund_cli.py nav --refresh` to force a
+provider refresh.
+
 ## Provider chain contract
 
 Every fund-related query goes through one of four provider
@@ -88,10 +97,12 @@ implementations, all behind a common shape defined by
 | AkShare         | free    | slow    | Full surface, server-throttled            |
 | Eastmoney       | free    | fast    | Snapshot + NAV only (best fallback)      |
 
-`auto` (the default) tries them in the order **Investoday →
-Tushare → AkShare → Eastmoney** when `INVESTDATA_API_KEY` (and
-optionally `TUSHARE_TOKEN`) is set. Without keys it falls back
-to **Eastmoney → AkShare** for the read paths.
+`auto` (the default) builds a capability-specific chain. Search, fund
+list, NAV, and snapshot use configured structured providers first,
+then Eastmoney and AkShare. Profile, holdings, bonds, industries,
+fees, dividends, splits, and managers use configured structured
+providers first, then AkShare and Eastmoney. For NAV, this provider
+chain is reached only after the local/OSS cache misses or is stale.
 
 The contract every provider satisfies:
 

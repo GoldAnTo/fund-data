@@ -18,7 +18,7 @@ also touches ``store`` for the per-table write helper.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,60 @@ __all__ = [
 ]
 
 logger = logging.getLogger("fund_data")
+
+DEFAULT_NAV_CACHE_MAX_AGE_HOURS = 24.0
+
+
+def _cached_nav_rows_cover_request(
+    rows: list[dict[str, Any]],
+    *,
+    start_date: str | None,
+    end_date: str | None,
+    per: int,
+) -> bool:
+    if not rows:
+        return False
+    if start_date or end_date:
+        return True
+    return len(rows) >= max(1, per)
+
+
+def _cached_nav_rows_are_fresh(
+    rows: list[dict[str, Any]],
+    cache_max_age_hours: float | None,
+) -> bool:
+    if cache_max_age_hours is None:
+        return True
+    cutoff = datetime.now(UTC) - timedelta(hours=cache_max_age_hours)
+    for row in rows:
+        fetched_at = row.get("fetched_at")
+        if not fetched_at:
+            return False
+        try:
+            fetched_at_dt = datetime.fromisoformat(str(fetched_at))
+        except ValueError:
+            return False
+        if fetched_at_dt.tzinfo is None:
+            fetched_at_dt = fetched_at_dt.replace(tzinfo=UTC)
+        if fetched_at_dt < cutoff:
+            return False
+    return True
+
+
+def _nav_rows_from_cache(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "nav_date": row["nav_date"],
+            "unit_nav": row.get("unit_nav"),
+            "accumulated_nav": row.get("accumulated_nav"),
+            "daily_growth_rate": row.get("daily_growth_rate"),
+            "subscribe_status": row.get("subscribe_status"),
+            "redeem_status": row.get("redeem_status"),
+            "dividend": row.get("dividend"),
+            "source": row.get("source") or "local.nav_history",
+        }
+        for row in rows
+    ]
 
 
 def _build_providers(provider: str, capability: str | None = None):
@@ -123,6 +177,8 @@ def fetch_nav_history(
     persist: bool = True,
     raw_text: str | None = None,
     provider: str = PROVIDER_AUTO,
+    cache: bool = True,
+    cache_max_age_hours: float | None = DEFAULT_NAV_CACHE_MAX_AGE_HOURS,
 ) -> list[dict[str, Any]]:
     if raw_text is not None:
         raw = raw_text
@@ -133,6 +189,22 @@ def fetch_nav_history(
         rows = parsers.parse_nav_history(raw)
         source = "eastmoney.nav_history"
     else:
+        store = FundDataStore(db_path) if cache else None
+        if store is not None:
+            cached_rows = store.select_nav_history(
+                code,
+                start_date=start_date,
+                end_date=end_date,
+                page=page,
+                per=per,
+            )
+            if _cached_nav_rows_cover_request(
+                cached_rows,
+                start_date=start_date,
+                end_date=end_date,
+                per=per,
+            ) and _cached_nav_rows_are_fresh(cached_rows, cache_max_age_hours):
+                return _nav_rows_from_cache(cached_rows)
         result = run_provider_chain(
             _build_providers(provider, capability="nav_history"),
             "nav_history",
@@ -384,4 +456,3 @@ def fetch_fund_managers(
             normalizers._json_dumps({"provider": result.provider, "rows": rows, "failures": result.failures}),
         )
     return rows
-

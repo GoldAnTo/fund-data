@@ -47,7 +47,7 @@
 
 ### 第 4 段 —— Provider 链
 
-> `build_providers_full("auto", capability="search")` 接着编排活数据源列表。`auto` 模式下，付费 provider（`investoday` 如果设了 `INVESTODAY_API_KEY`，然后是 `tushare` 如果设了 `TUSHARE_TOKEN`）会放到队首；免费的 `[Eastmoney, AkShare]` 按 capability 特定顺序放到末尾 —— search / NAV / snapshot / fund_list 走 Eastmoney 优先，profile / holdings / bonds / industries / fees / dividends / splits / managers 走 AkShare 优先。`run_provider_chain` 按顺序调每个 provider，把 `None` 和空结果当成失败（记到 `failures` 列表），**第一个返回非空 rows 的胜出**。成功的返回会带上 `failures` 路径，所以 agent 可以 audit 试过哪些 provider。如果所有 provider 都失败，链会抛 `ProviderError("all providers failed for search_funds: ...")`，message 里带完整路径。
+> `build_providers_full("auto", capability="search")` 接着编排活数据源列表。`auto` 模式下，付费 provider（`investoday` 如果设了 `INVESTODAY_API_KEY`，然后是 `tushare` 如果设了 `TUSHARE_TOKEN`）会放到队首；免费的 `[Eastmoney, AkShare]` 按 capability 特定顺序放到末尾 —— search / NAV refresh / snapshot / fund_list 走 Eastmoney 优先，profile / holdings / bonds / industries / fees / dividends / splits / managers 走 AkShare 优先。NAV 查询先读已解析出的 OSS/local `nav_history` 缓存，只有 missing/stale 或显式 refresh 时才进这条 provider 链。`run_provider_chain` 按顺序调每个 provider，把 `None` 和空结果当成失败（记到 `failures` 列表），**第一个返回非空 rows 的胜出**。成功的返回会带上 `failures` 路径，所以 agent 可以 audit 试过哪些 provider。如果所有 provider 都失败，链会抛 `ProviderError("all providers failed for search_funds: ...")`，message 里带完整路径。
 
 ### 第 5 段 —— 持久化（顺带提一下，不展开）
 

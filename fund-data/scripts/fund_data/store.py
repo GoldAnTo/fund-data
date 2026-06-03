@@ -336,6 +336,42 @@ class FundDataStore:
             )
         return len(rows)
 
+    def select_nav_history(
+        self,
+        fund_code: str,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        page: int = 1,
+        per: int = 20,
+    ) -> list[dict[str, Any]]:
+        code = normalizers.normalize_fund_code(fund_code)
+        clauses = ["fund_code = ?"]
+        params: list[Any] = [code]
+        if start_date:
+            clauses.append("nav_date >= ?")
+            params.append(start_date)
+        if end_date:
+            clauses.append("nav_date <= ?")
+            params.append(end_date)
+        limit = max(1, per)
+        offset = max(0, page - 1) * limit
+        params.extend([limit, offset])
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select
+                    fund_code, nav_date, unit_nav, accumulated_nav, daily_growth_rate,
+                    subscribe_status, redeem_status, dividend, source, fetched_at
+                from nav_history
+                where {' and '.join(clauses)}
+                order by nav_date desc
+                limit ? offset ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def upsert_snapshot(self, snapshot: dict[str, Any]) -> int:
         now = utc_now()
         with self.connect() as conn:
@@ -769,5 +805,4 @@ class FundDataStore:
         """
         with self.connect() as conn:
             return [dict(row) for row in conn.execute(sql, params).fetchall()]
-
 
