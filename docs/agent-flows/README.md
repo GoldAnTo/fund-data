@@ -18,6 +18,7 @@
 | `fund-data` MCP server —— stdio JSON-RPC 2.0（17 个 tool） | [`fund-mcp-server-pipeline.md`](./fund-mcp-server-pipeline.md) | [`fund-mcp-server-playbook.md`](./fund-mcp-server-playbook.md) |
 | `fund-cli cloud {build-bundle, pull, status, upload, archive-full}` —— OSS 分发 | [`fund-cloud-bundle-pipeline.md`](./fund-cloud-bundle-pipeline.md) | [`fund-cloud-bundle-playbook.md`](./fund-cloud-bundle-playbook.md) |
 | `fund_coverage` / `fund_coverage_report` —— 只读内省层 | [`fund-coverage-pipeline.md`](./fund-coverage-pipeline.md) | [`fund-coverage-playbook.md`](./fund-coverage-playbook.md) |
+| `fund_self_audit` / `fund_health_check` — prioritized self-audit queue | [`fund-self-audit-pipeline.md`](./fund-self-audit-pipeline.md) | [`fund-self-audit-playbook.md`](./fund-self-audit-playbook.md) |
 | `install_skill.py {install, uninstall, status}` —— 把 skill 装到 OpenClaw / Codex / Claude | [`fund-install-pipeline.md`](./fund-install-pipeline.md) | [`fund-install-playbook.md`](./fund-install-playbook.md) |
 
 ## 怎么读这些文档
