@@ -370,6 +370,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--output", help="Write the JSON report to this file instead of stdout")
 
+    health_check = subparsers.add_parser("health-check", help="Inspect one fund and recommend missing-data actions")
+    health_check.add_argument("code")
+    health_check.add_argument("--max-age-hours", type=float, default=36.0)
+    health_check.add_argument("--include-structural", action="store_true")
+    health_check.add_argument("--output")
+    _add_common_db_arg(health_check)
+
+    self_audit = subparsers.add_parser("self-audit", help="Build a prioritized read-only data remediation queue")
+    self_audit.add_argument("--code", action="append", help="Fund code; can be repeated")
+    self_audit.add_argument("--codes-file", action="append", help="File containing fund codes")
+    self_audit.add_argument("--fund-type")
+    self_audit.add_argument("--max-age-hours", type=float, default=36.0)
+    self_audit.add_argument("--include-structural", action="store_true")
+    self_audit.add_argument("--limit", type=int)
+    self_audit.add_argument("--output")
+    _add_common_db_arg(self_audit)
+
     coverage_report = subparsers.add_parser(
         "coverage-report",
         help="Show completeness score for funds with detailed missing-dataset breakdown",
@@ -735,6 +752,40 @@ def main(argv: list[str] | None = None) -> int:
                 min_interval_seconds=args.min_interval_seconds,
             )
             _emit(result, args)
+            return 0
+
+        if args.command == "health-check":
+            payload = fund_data.check_fund_health(
+                args.code,
+                db_path=args.db,
+                max_age_hours=args.max_age_hours,
+                include_structural=args.include_structural,
+            )
+            if args.output:
+                _write_json_to_file(args.output, payload)
+                print(args.output)
+            else:
+                _print_json(payload)
+            return 0
+
+        if args.command == "self-audit":
+            codes = []
+            for codes_file in args.codes_file or []:
+                codes.extend(fund_data.parse_fund_codes(Path(codes_file).read_text(encoding="utf-8")))
+            codes.extend(fund_data.normalize_fund_codes(args.code or []))
+            payload = fund_data.build_self_audit_queue(
+                db_path=args.db,
+                codes=codes or None,
+                fund_type=args.fund_type,
+                max_age_hours=args.max_age_hours,
+                include_structural=args.include_structural,
+                limit=args.limit,
+            )
+            if args.output:
+                _write_json_to_file(args.output, payload)
+                print(args.output)
+            else:
+                _print_json(payload)
             return 0
 
         if args.command == "export":

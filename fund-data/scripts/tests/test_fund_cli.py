@@ -529,6 +529,28 @@ class JsonFlagContractTests(unittest.TestCase):
         # Both must parse to identical data structures.
         self.assertEqual(json.loads(pretty.stdout), json.loads(compact.stdout))
 
+    def test_self_audit_cli_prints_json(self):
+        payload = {"summary": {"queue_size": 1, "auto_fill_executed": False}, "queue": [], "batch_suggestions": []}
+        with mock.patch.object(fund_cli.fund_data, "build_self_audit_queue", return_value=payload), mock.patch.object(
+            fund_cli.fund_cloud, "ensure_project_bundle"
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                exit_code = fund_cli.main(["self-audit", "--limit", "5"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(buf.getvalue()), payload)
+
+    def test_health_check_cli_prints_json(self):
+        payload = {"summary": {"queue_size": 0, "auto_fill_executed": False}, "queue": [], "batch_suggestions": []}
+        with mock.patch.object(fund_cli.fund_data, "check_fund_health", return_value=payload), mock.patch.object(
+            fund_cli.fund_cloud, "ensure_project_bundle"
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                exit_code = fund_cli.main(["health-check", "110022"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(buf.getvalue()), payload)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -63,15 +63,15 @@ EXPECTED_EMPTY = {
 
 
 DATASET_RULES = {
-    "fund_profiles": {"table": "fund_profiles", "priority": "P1", "tool": "fund_profile", "batch_flag": "--include-profile"},
-    "nav_history": {"table": "nav_history", "priority": "P1", "tool": "fund_nav_history", "batch_flag": "", "stale_column": "fetched_at"},
-    "snapshots": {"table": "snapshots", "priority": "P1", "tool": "fund_snapshot", "batch_flag": None, "stale_column": "fetched_at"},
-    "stock_holdings": {"table": "stock_holdings", "priority": "P2", "tool": "fund_stock_holdings", "batch_flag": "--include-holdings"},
-    "bond_holdings": {"table": "bond_holdings", "priority": "P2", "tool": "fund_bond_holdings", "batch_flag": "--include-bonds"},
-    "industry_allocations": {"table": "industry_allocations", "priority": "P2", "tool": "fund_industry_allocations", "batch_flag": "--include-industries"},
-    "fee_structures": {"table": "fee_structures", "priority": "P2", "tool": "fund_fee_structures", "batch_flag": "--include-fees"},
-    "dividends": {"table": "dividends", "priority": "P4", "tool": "fund_dividends", "batch_flag": "--include-distributions", "naturally_sparse": True},
-    "splits": {"table": "splits", "priority": "P4", "tool": "fund_splits", "batch_flag": "--include-distributions", "naturally_sparse": True},
+    "fund_profiles": {"table": "fund_profiles", "priority": "P1", "tool": "fund_profile", "cli": "profile", "batch_flag": "--include-profile"},
+    "nav_history": {"table": "nav_history", "priority": "P1", "tool": "fund_nav_history", "cli": "nav", "batch_flag": "", "stale_column": "fetched_at"},
+    "snapshots": {"table": "snapshots", "priority": "P1", "tool": "fund_snapshot", "cli": "snapshot", "batch_flag": None, "stale_column": "fetched_at"},
+    "stock_holdings": {"table": "stock_holdings", "priority": "P2", "tool": "fund_stock_holdings", "cli": "holdings", "batch_flag": "--include-holdings"},
+    "bond_holdings": {"table": "bond_holdings", "priority": "P2", "tool": "fund_bond_holdings", "cli": "bonds", "batch_flag": "--include-bonds"},
+    "industry_allocations": {"table": "industry_allocations", "priority": "P2", "tool": "fund_industry_allocations", "cli": "industries", "batch_flag": "--include-industries"},
+    "fee_structures": {"table": "fee_structures", "priority": "P2", "tool": "fund_fee_structures", "cli": "fees", "batch_flag": "--include-fees"},
+    "dividends": {"table": "dividends", "priority": "P4", "tool": "fund_dividends", "cli": "dividends", "batch_flag": "--include-distributions", "naturally_sparse": True},
+    "splits": {"table": "splits", "priority": "P4", "tool": "fund_splits", "cli": "splits", "batch_flag": "--include-distributions", "naturally_sparse": True},
 }
 
 
@@ -154,7 +154,6 @@ def _entry(
 ) -> dict[str, Any]:
     rule = DATASET_RULES[dataset]
     code = fund["fund_code"]
-    subcmd = rule["tool"].replace("fund_", "")
     return {
         "priority": priority,
         "score": score,
@@ -167,7 +166,7 @@ def _entry(
         "reason": reason,
         "recommended_mcp_tool": rule["tool"],
         "recommended_mcp_arguments": {"code": code, "refresh": True},
-        "recommended_cli": f"fund-data/scripts/fund_cli.py {subcmd} {code} --provider auto",
+        "recommended_cli": f"fund-data/scripts/fund_cli.py {rule['cli']} {code} --provider auto",
         "auto_fill_executed": False,
     }
 
