@@ -367,6 +367,101 @@ class CompletionRunnerExecutionTests(unittest.TestCase):
             )
         self.assertEqual(execution["summary"]["rows_changed"], 22)
 
+    def test_rows_actually_inserted_uses_real_db_diff(self):
+        """Regression for the 2026-06-04 rows-actually-inserted
+        ship: ``rows_changed`` from batch-sync counts attempted
+        upserts (including no-op writes against existing rows).
+        A second run against a fully-populated DB reports
+        ``rows_changed=22`` even though the DB grew by zero, so
+        the verify report would falsely recommend publish.
+
+        The runner now samples the actual DB row counts on the
+        8 query tables before and after each batch and reports
+        the diff as ``rows_actually_inserted``. The verify layer
+        gates on this field instead of the optimistic stdout
+        counter.
+        """
+        plan = _plan_payload()
+        plan["batches"] = [
+            {**plan["batches"][0], "batch_id": "openclaw-b1", "codes": ["110022"]}
+        ]
+        plan_path = self.tmp / "plan.json"
+        plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+        # batch-sync stdout is the optimistic case: it claims 22
+        # rows were written. The DB diff below will report 0 -- the
+        # runner should prefer the diff over the stdout.
+        stdout = json.dumps({
+            "batch_id": "openclaw-b1",
+            "total": 1, "ok": 1, "failed": 0,
+            "results": [
+                {
+                    "fund_code": "110022", "status": "ok",
+                    "rows_changed": 22, "nav_rows": 20,
+                }
+            ],
+        })
+
+        # Snapshot the tables before / after; the diff is 0
+        # because no rows were actually inserted.
+        snapshot_calls: list[int] = []
+        real_snapshot = completion._snapshot_table_counts
+
+        def tracking_snapshot(db_path, codes):
+            value = real_snapshot(db_path, codes)
+            snapshot_calls.append(int(sum(value.values())))
+            return value
+
+        with mock.patch.object(
+            completion.subprocess, "run",
+            return_value=subprocess.CompletedProcess(args="x", returncode=0, stdout=stdout, stderr=""),
+        ), mock.patch.object(
+            completion, "_snapshot_table_counts", side_effect=tracking_snapshot
+        ):
+            execution = fund_data.run_completion_plan(
+                plan_path=plan_path, confirm_execute=True
+            )
+        # batch-sync reported rows_changed=22 (optimistic), but the
+        # DB diff is 0 because nothing was actually inserted.
+        self.assertEqual(execution["summary"]["rows_changed"], 22)
+        self.assertEqual(execution["summary"]["rows_actually_inserted"], 0)
+        # We snapshotted the tables at least once before and once
+        # after the batch.
+        self.assertGreaterEqual(len(snapshot_calls), 2)
+
+    def test_verify_uses_rows_actually_inserted_for_publish_gate(self):
+        """``publish_recommended`` should fire only when the DB
+        actually grew, not when batch-sync stdout claims it did."""
+        execution = {
+            "executed": True,
+            "refusal_reason": None,
+            "summary": {
+                # batch-sync's optimistic counter says 22 rows
+                # changed, but the real DB diff is 0 -- a no-op
+                # re-run.
+                "rows_changed": 22,
+                "rows_actually_inserted": 0,
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            before = tmpdir / "before.json"
+            after = tmpdir / "after.json"
+            exec_p = tmpdir / "execution.json"
+            before.write_text(json.dumps({"summary": {"queue_size": 1, "p3": 1}}), encoding="utf-8")
+            after.write_text(json.dumps({"summary": {"queue_size": 1, "p3": 1}}), encoding="utf-8")
+            exec_p.write_text(json.dumps(execution), encoding="utf-8")
+
+            report = fund_data.verify_completion_run(
+                before_queue_path=before,
+                after_queue_path=after,
+                execution_path=exec_p,
+            )
+        self.assertEqual(report["rows_actually_inserted"], 0)
+        # The optimistic counter is surfaced for transparency but
+        # the publish gate now uses the trustworthy diff signal.
+        self.assertEqual(report["rows_changed"], 22)
+        self.assertFalse(report["publish_recommended"])
+
     def test_provider_calls_is_not_double_counted(self):
         """Regression for Bug 2 / 2026-06-03 completion: the runner
         used to pre-fill ``summary.provider_calls`` from the plan's

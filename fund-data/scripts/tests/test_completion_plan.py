@@ -276,6 +276,72 @@ class CompletionPlanTests(unittest.TestCase):
         self.assertEqual(plan["summary"]["planned_items"], 2)
         self.assertEqual(plan["summary"]["blocked"], 0)
 
+    def test_plan_merges_batches_with_same_priority_and_codes(self):
+        """Regression for the 2026-06-04 batch-merge ship: when a
+        single fund has both nav_history and snapshots stale, the
+        builder used to produce two batches that each pull the
+        same default bundle -- one of them was pure duplicate IO.
+        Merging them into one batch keeps the elapsed time
+        honest and surfaces the union in the dataset name.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            queue_path = _write_queue(
+                tmp,
+                [
+                    _queue_item("110022", "nav_history", "P3"),
+                    _queue_item("110022", "snapshots", "P3"),
+                ],
+            )
+            plan = fund_data.build_completion_plan(queue_path=queue_path)
+
+        self.assertEqual(len(plan["batches"]), 1)
+        batch = plan["batches"][0]
+        self.assertEqual(batch["priority"], "P3")
+        self.assertEqual(batch["codes"], ["110022"])
+        # The dataset name is the ``+``-joined union of the merged
+        # datasets so the operator still sees what was combined.
+        self.assertIn("nav_history", batch["dataset"])
+        self.assertIn("snapshots", batch["dataset"])
+        self.assertEqual(batch.get("merged_from"), 2)
+        # The merged command drops --include-* flags so the runner
+        # gets the default bundle pull (snapshot + nav + ...).
+        self.assertNotIn("--include-", batch["command"])
+        self.assertIn("batch-sync", batch["command"])
+        # planned_items counts the underlying codes, not the
+        # merged batches: 1 code in 1 merged batch == 1 planned
+        # fund, and 1 provider call.
+        self.assertEqual(plan["summary"]["planned_items"], 1)
+        self.assertEqual(plan["summary"]["estimated_provider_calls"], 1)
+
+    def test_plan_does_not_merge_batches_with_different_codes(self):
+        """Two batches that share a priority but have different
+        fund codes must NOT be merged -- the codes files would
+        otherwise be wrong, and the runner would lose track of
+        which funds actually got pulled.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            queue_path = _write_queue(
+                tmp,
+                [
+                    _queue_item("110022", "nav_history", "P3"),
+                    _queue_item("110022", "snapshots", "P3"),
+                    _queue_item("110023", "snapshots", "P3"),
+                ],
+            )
+            plan = fund_data.build_completion_plan(queue_path=queue_path)
+
+        # Two snapshots codes in different batches would never have
+        # been merged in the first place because the snapshots
+        # queue collapsed into one (P3, snapshots) batch -- but
+        # the nav_history batch is a separate (P3, nav_history)
+        # batch with its own code set, so it must NOT merge with
+        # the snapshots batch. We end up with 2 batches here.
+        self.assertEqual(len(plan["batches"]), 2)
+        merged = [b for b in plan["batches"] if b.get("merged_from", 1) > 1]
+        self.assertEqual(merged, [])
+
 
 class CompletionPolicyTests(unittest.TestCase):
     def test_load_completion_policy_applies_safe_defaults(self):

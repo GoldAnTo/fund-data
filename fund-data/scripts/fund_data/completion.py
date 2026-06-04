@@ -105,6 +105,23 @@ LOCK_FILENAME = "openclaw_active_completion.lock"
 LOCK_STALE_HOURS = 12
 
 
+# Tables whose row counts we diff before/after to compute
+# ``rows_actually_inserted``. ``batch-sync`` is a per-fund command
+# that pulls the whole default bundle (snapshot + nav + profile +
+# holdings + fees + ...); we count every table that the bundle
+# may touch so an empty second run does not look like a real fill.
+DIFF_TABLES: tuple[str, ...] = (
+    "funds",
+    "fund_profiles",
+    "nav_history",
+    "snapshots",
+    "stock_holdings",
+    "bond_holdings",
+    "industry_allocations",
+    "fee_structures",
+)
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge ``override`` into ``base`` and return the
     result. Lists and scalars in ``override`` replace ``base``;
@@ -358,6 +375,73 @@ def _group_into_batches(
     return batches, skipped
 
 
+def _merge_batches(batches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge batches that share the same priority and exact code
+    set into a single batch. ``batch-sync`` is per-fund and pulls
+    the whole default dataset bundle (nav_history + snapshots +
+    profile etc.), so issuing two batches with the same code list
+    and the same priority does nothing but double the IO. Merging
+    them keeps the plan honest and shaves the elapsed time.
+
+    The merge keeps the first batch's ``provider`` / ``batch_id``
+    stem, joins the dataset names with ``+`` so the operator can
+    still see which datasets were merged, and rewrites the
+    command to drop every ``--include-*`` flag -- the default
+    bundle pull is the broadest behaviour and matches the union of
+    the merged datasets' intent.
+    """
+    if not batches:
+        return batches
+    by_key: dict[tuple[str, frozenset[str]], list[dict[str, Any]]] = {}
+    for batch in batches:
+        key = (batch["priority"], frozenset(batch["codes"]))
+        by_key.setdefault(key, []).append(batch)
+    merged: list[dict[str, Any]] = []
+    for (priority, _codes_key), group in by_key.items():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        first = group[0]
+        datasets = [b["dataset"] for b in group]
+        # Rebuild the command without any --include-* flag. The
+        # default bundle pull covers all of the merged datasets.
+        # We rebuild from the original parts to avoid stripping
+        # non-flag tokens; a minimal ``batch-sync --codes-file ...
+        # --provider X --concurrency N --min-interval-seconds M
+        # --batch-id ID`` keeps the runtime contract identical.
+        command_parts = [
+            ".venv-akshare/bin/python",
+            "fund-data/scripts/fund_cli.py",
+            "batch-sync",
+            "--codes-file",
+            first["codes_file"],
+            "--provider",
+            first["provider"],
+            "--concurrency",
+            str(first.get("concurrency", 4)),
+            "--min-interval-seconds",
+            str(first.get("min_interval_seconds", 0.2)),
+            "--batch-id",
+            first["batch_id"],
+        ]
+        # Try to keep the original concurrency / min_interval values
+        # if they are baked into the command. ``first`` carries
+        # them only when the builder set them; otherwise we fall
+        # back to the strings above.
+        merged.append({
+            "batch_id": first["batch_id"],
+            "priority": priority,
+            "dataset": "+".join(datasets),
+            "datasets": datasets,
+            "provider": first["provider"],
+            "codes": first["codes"],
+            "codes_file": first["codes_file"],
+            "command": " ".join(command_parts),
+            "merged_from": len(group),
+        })
+    return merged
+
+
 def build_completion_plan(
     *,
     queue_path: str | Path,
@@ -384,7 +468,7 @@ def build_completion_plan(
     # need to be surfaced in the plan's ``blocked`` list so the
     # operator can see them and run the per-fund fallback CLI;
     # silently dropping them was a Bug 3 regression.
-    batches, skipped = _group_into_batches(
+    raw_batches, skipped = _group_into_batches(
         planned,
         run_id=run_id,
         run_root=run_root,
@@ -392,6 +476,13 @@ def build_completion_plan(
         provider_policy=provider_policy,
         blocked_sink=blocked,
     )
+    # Merge batches that share priority + codes. Without this,
+    # ``self-audit --code 110022`` with both nav_history and
+    # snapshots stale produces two batches that each pull the
+    # same fund's full default bundle -- one of them is pure
+    # duplicate IO. See test_plan_merges_batches_with_same_codes
+    # for the regression guard.
+    batches = _merge_batches(raw_batches)
 
     total_calls = sum(len(batch["codes"]) for batch in batches)
     concurrency = max(1, int(budgets.get("concurrency", 4)))
@@ -508,6 +599,42 @@ def _release_lock(lock: Path) -> None:
         lock.unlink()
     except FileNotFoundError:
         pass
+
+
+def _snapshot_table_counts(
+    db_path: Path, codes: list[str]
+) -> dict[str, int]:
+    """Return a ``{table: row_count_for_these_codes}`` snapshot.
+
+    Used to compute ``rows_actually_inserted`` by diffing before
+    and after a batch execution. ``codes`` may be empty, in which
+    case every table reports 0 (the diff is then 0 and the caller
+    can short-circuit).
+    """
+    counts: dict[str, int] = {}
+    if not db_path.exists():
+        return {table: 0 for table in DIFF_TABLES}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            for table in DIFF_TABLES:
+                if not codes:
+                    counts[table] = 0
+                    continue
+                placeholders = ",".join("?" for _ in codes)
+                try:
+                    row = conn.execute(
+                        f"select count(*) from {table} "
+                        f"where fund_code in ({placeholders})",
+                        codes,
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    # Table missing in this DB (e.g. audit-only db).
+                    counts[table] = 0
+                    continue
+                counts[table] = int(row[0]) if row else 0
+    except sqlite3.OperationalError:
+        return {table: 0 for table in DIFF_TABLES}
+    return counts
 
 
 def _execute_batch(batch: dict[str, Any], run_root: Path) -> dict[str, Any]:
@@ -685,7 +812,13 @@ def run_completion_plan(
             "total_batches": 0,
             "executed_batches": 0,
             "failed_batches": 0,
+            # ``rows_changed`` is what batch-sync stdout reported;
+            # it counts attempted writes including no-op upserts. The
+            # trustworthy signal is ``rows_actually_inserted`` below,
+            # which is computed from a real before/after diff on the
+            # 8 query tables.
             "rows_changed": 0,
+            "rows_actually_inserted": 0,
             "provider_calls": 0,
             "elapsed_seconds": 0.0,
         },
@@ -748,6 +881,19 @@ def run_completion_plan(
         encoding="utf-8",
     )
 
+    # Pre-flight: count rows for the union of all batch codes so we
+    # can compute a real before/after diff. ``batch-sync`` reports
+    # its own ``rows_changed`` (which counts attempted upserts
+    # including no-ops); the trustworthy signal is the actual DB
+    # row count delta across the 8 query tables.
+    target_db_path = default_db_path()
+    all_codes: list[str] = []
+    for batch in plan.get("batches", []):
+        for code in batch.get("codes", []):
+            if code not in all_codes:
+                all_codes.append(code)
+    baseline_counts = _snapshot_table_counts(target_db_path, all_codes)
+
     try:
         budgets = policy["budgets"]
         max_minutes = float(budgets.get("max_elapsed_minutes", 30))
@@ -766,7 +912,21 @@ def run_completion_plan(
                     "reason": f"elapsed {elapsed_minutes:.1f}m exceeds budget {max_minutes:.1f}m",
                 })
                 continue
+            # Per-batch diff: count the same codes again right after
+            # the batch so we can record the per-batch delta and sum
+            # it into the run-level ``rows_actually_inserted``.
+            pre_batch_counts = _snapshot_table_counts(
+                target_db_path, batch.get("codes", [])
+            )
             record = _execute_batch(batch, run_root)
+            post_batch_counts = _snapshot_table_counts(
+                target_db_path, batch.get("codes", [])
+            )
+            per_batch_delta = sum(
+                max(0, post_batch_counts.get(table, 0) - pre_batch_counts.get(table, 0))
+                for table in DIFF_TABLES
+            )
+            record["rows_actually_inserted"] = per_batch_delta
             execution["batches"].append(record)
             execution["summary"]["provider_calls"] += len(batch["codes"])
             # A batch is considered "failed" for the failure-rate
@@ -789,6 +949,10 @@ def run_completion_plan(
                 execution["summary"]["executed_batches"] += 1
             if record.get("rows_changed"):
                 execution["summary"]["rows_changed"] += record["rows_changed"]
+            if record.get("rows_actually_inserted"):
+                execution["summary"]["rows_actually_inserted"] += record[
+                    "rows_actually_inserted"
+                ]
             # Failure rate budget: stop if more than 25% of executed
             # batches have failed. We require at least 2 executed
             # batches before judging so a single transient failure
@@ -846,7 +1010,21 @@ def verify_completion_run(
     before_size = int(before_summary.get("queue_size", 0))
     after_size = int(after_summary.get("queue_size", 0))
     improved_items = max(0, before_size - after_size)
-    rows_changed = int(execution.get("summary", {}).get("rows_changed", 0))
+    summary = execution.get("summary", {})
+    # ``rows_actually_inserted`` is the trustworthy signal -- the
+    # real DB row count delta across the 8 query tables. Fall back to
+    # ``rows_changed`` for older execution reports that pre-date the
+    # diff-based counter (so verify keeps working with historical
+    # execution.json files). Use ``in summary`` so a present-but-zero
+    # counter still wins over the optimistic fallback (an empty
+    # second run should NOT trigger publish).
+    rows_changed = int(summary.get("rows_changed", 0))
+    if "rows_actually_inserted" in summary:
+        rows_actually_inserted = int(summary.get("rows_actually_inserted", 0))
+        fill_signal = rows_actually_inserted
+    else:
+        rows_actually_inserted = 0
+        fill_signal = rows_changed
 
     # ``new_failures`` is the change in P3/P4 across the two queues.
     # We use a simple proxy: P3 shrinkage that did not match the
@@ -858,7 +1036,7 @@ def verify_completion_run(
     publish_recommended = (
         execution.get("executed", False)
         and execution.get("refusal_reason") is None
-        and rows_changed > 0
+        and fill_signal > 0
         and new_p3 == 0
     )
 
@@ -867,10 +1045,11 @@ def verify_completion_run(
         "after_queue_size": after_size,
         "improved_items": improved_items,
         "rows_changed": rows_changed,
+        "rows_actually_inserted": rows_actually_inserted,
         "new_failures": new_p3,
         "doctor_ok": None,  # filled in by CLI/MCP after running doctor
         "publish_recommended": publish_recommended,
-        "execution_summary": execution.get("summary", {}),
+        "execution_summary": summary,
         "refusal_reason": execution.get("refusal_reason"),
     }
 
