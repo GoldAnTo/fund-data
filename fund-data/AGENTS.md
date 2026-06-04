@@ -309,15 +309,17 @@ itself.
 
 ### Snapshots have no `batch-sync` primitive yet
 
-`fund_cli batch-sync` exposes `--include-profile`, `--include-holdings`,
-`--include-bonds`, `--include-industries`, `--include-fees`, and
-`--include-distributions` — but no `--include-snapshots`. The
-completion plan builder therefore puts every snapshots P1 into the
-`blocked` list with a `fallback_cli` of `fund_cli snapshot <code>
---provider auto` (singular `snapshot`, the actual subcommand name).
-If the OpenClaw loop is going to be the primary fill path, the next
-follow-up is `feat(cli): add --include-snapshots to batch-sync` so
-the runner can actually batch them.
+**Updated 2026-06-04**: this note is now stale. `fund_cli batch-sync`
+exposes `--include-snapshots` (default `True`, with a `--no-include-snapshots`
+opt-out). `sync_fund` itself always pulled the snapshot row, so the
+only thing that was missing was a visible contract. The completion
+plan builder now routes snapshot rows through the regular batch
+path; the old `blocked + fallback_cli` behaviour was retired.
+
+If you see a completion plan with `dataset: snapshots` in
+`blocked[]`, that is a regression -- it should always be in
+`batches[]` instead. (Regression guard:
+`test_snapshots_in_queue_lands_in_batch_not_blocked`.)
 
 ### P0 is not a queue of bad rows; it is a request to bootstrap the universe
 

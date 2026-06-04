@@ -239,14 +239,12 @@ class CompletionPlanTests(unittest.TestCase):
         self.assertGreaterEqual(plan["summary"]["estimated_minutes"], 1)
         self.assertEqual(plan["summary"]["estimated_provider_calls"], 8)
 
-    def test_snapshots_no_batch_primitive_lands_in_blocked_with_fallback(self):
-        """Regression for Bug 3 / 2026-06-03 completion: a
-        snapshots-P1 queue used to produce ``batches=[]`` and
-        ``blocked=[]`` with the codes only visible in
-        ``skipped_for_budget``. The plan must now surface each
-        snapshot code as a blocked entry with a single-fund CLI
-        fallback (using the actual ``snapshot`` subcommand, not
-        the dataset key ``snapshots``)."""
+    def test_snapshots_in_queue_lands_in_batch_not_blocked(self):
+        """After the 2026-06-04 batch-sync --include-snapshots ship,
+        snapshot rows travel through the regular batch path
+        instead of being blocked. ``sync_fund`` always pulled the
+        snapshot row, so the only thing that was missing was a
+        visible contract -- this test pins that down."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             queue_path = _write_queue(
@@ -258,24 +256,25 @@ class CompletionPlanTests(unittest.TestCase):
             )
             plan = fund_data.build_completion_plan(queue_path=queue_path)
 
-        # No batch was scheduled for snapshots.
-        self.assertEqual(plan["batches"], [])
-        # Every snapshot code is in the blocked list with a usable
-        # fallback CLI.
-        blocked_codes = {item["fund_code"] for item in plan["blocked"]}
-        self.assertEqual(blocked_codes, {"110022", "110023"})
-        for item in plan["blocked"]:
-            self.assertEqual(item["dataset"], "snapshots")
-            self.assertEqual(item["priority"], "P1")
-            self.assertIn("no batch-sync primitive", item["reason"])
-            # Use the *CLI subcommand name* (singular ``snapshot``)
-            # not the dataset key.
-            self.assertIn("fund_cli.py snapshot ", item["fallback_cli"])
-            self.assertNotIn("fund_cli.py snapshots ", item["fallback_cli"])
-        # The codes are still visible somewhere -- the operator
-        # cannot lose track of them.
-        self.assertEqual(plan["summary"]["blocked"], 2)
-        self.assertEqual(plan["summary"]["planned_items"], 0)
+        # One batch per (priority, dataset) is the rule. snapshots
+        # should now land here instead of the blocked[] sink.
+        snapshot_batches = [b for b in plan["batches"] if b["dataset"] == "snapshots"]
+        self.assertEqual(len(snapshot_batches), 1)
+        batch = snapshot_batches[0]
+        self.assertEqual(batch["priority"], "P1")
+        self.assertEqual(sorted(batch["codes"]), ["110022", "110023"])
+        # The batch command uses batch-sync (the snapshots flag is
+        # the default now, so it is absent from the command line;
+        # users opt out with --no-include-snapshots).
+        self.assertIn("batch-sync", batch["command"])
+        # The codes file is written under the run root so the
+        # runner can read it.
+        self.assertTrue(batch["codes_file"].endswith(".txt"))
+        # Nothing should land in blocked[] for snapshots anymore.
+        snapshot_blocked = [b for b in plan["blocked"] if b["dataset"] == "snapshots"]
+        self.assertEqual(snapshot_blocked, [])
+        self.assertEqual(plan["summary"]["planned_items"], 2)
+        self.assertEqual(plan["summary"]["blocked"], 0)
 
 
 class CompletionPolicyTests(unittest.TestCase):

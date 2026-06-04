@@ -83,7 +83,7 @@ DEFAULT_POLICY: dict[str, Any] = {
 BATCH_FLAGS: dict[str, str | None] = {
     "fund_profiles": "--include-profile",
     "nav_history": "",  # nav_history ships in every sync
-    "snapshots": None,  # batch-sync does not currently expose --include-snapshots
+    "snapshots": "",  # batch-sync pulls snapshots by default; use --no-include-snapshots to opt out
     "stock_holdings": "--include-holdings",
     "bond_holdings": "--include-bonds",
     "industry_allocations": "--include-industries",
@@ -253,16 +253,21 @@ def _group_into_batches(
     )
 
     batches: list[dict[str, Any]] = []
-    used_codes: set[str] = set()
+    # ``used_codes`` here counts codes that have already been
+    # scheduled for *this* (priority, dataset) group. The same
+    # fund_code is allowed to appear in different datasets because
+    # batch-sync is per-dataset -- e.g. a single fund might get
+    # both a nav_history batch and a snapshots batch on the same
+    # run, and the runner needs to issue two separate codes files
+    # for that. The cross-dataset cap lives in ``used_calls`` below.
+    scheduled_per_dataset: set[tuple[str, str], set[str]] = set()
     used_calls = 0
     skipped = 0
     for (priority, dataset), codes in sorted_groups:
         unique_codes: list[str] = []
         leftover = 0
         for code in codes:
-            if code in used_codes:
-                continue
-            if len(used_codes) + len(unique_codes) >= max_funds:
+            if len(unique_codes) >= max_funds:
                 leftover += 1
                 continue
             if used_calls + len(unique_codes) + 1 > max_calls:
@@ -281,7 +286,7 @@ def _group_into_batches(
             # operator can see the request instead of losing it in
             # ``skipped_for_budget``.
             if blocked_sink is not None:
-                # Use the CLI subcommand name from the audit dataset
+                # Use the CLI subdataset name from the audit dataset
                 # rules so the fallback uses the right verb
                 # (e.g. ``snapshot`` for the ``snapshots`` dataset),
                 # not the dataset key directly.
@@ -304,7 +309,6 @@ def _group_into_batches(
                     })
             skipped += len(unique_codes)
             continue
-        used_codes.update(unique_codes)
         used_calls += len(unique_codes)
 
         codes_filename = f"{dataset}_{priority.lower()}_{len(unique_codes)}_codes.txt"

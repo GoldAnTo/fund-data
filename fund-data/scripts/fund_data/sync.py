@@ -166,6 +166,7 @@ def sync_fund(
     db_path: str | Path | None = None,
     client: FundDataClient | None = None,
     provider: str = PROVIDER_AUTO,
+    include_snapshots: bool = True,
     include_holdings: bool = False,
     include_profile: bool = False,
     include_bonds: bool = False,
@@ -181,6 +182,7 @@ def sync_fund(
     store = FundDataStore(db_path)
     code = normalizers.normalize_fund_code(code)
     if include_all:
+        include_snapshots = True
         include_holdings = True
         include_profile = True
         include_bonds = True
@@ -194,15 +196,18 @@ def sync_fund(
     def record_dataset_error(dataset: str, exc: Exception) -> None:
         dataset_errors.append({"dataset": dataset, "message": str(exc)})
 
+    snapshot_count = 0
+    snapshot: dict[str, Any] | None = None
     try:
-        snapshot = fetch.fetch_snapshot(
-            code, db_path=db_path, client=client, persist=True, provider=provider
-        )
-        # Back-end share classes have no standalone Eastmoney
-        # page; treat "no snapshot available" (None or empty dict)
-        # as a soft skip rather than aborting the whole sync.
-        snapshot_count = 1 if snapshot else 0
-        rows_changed += snapshot_count
+        if include_snapshots:
+            snapshot = fetch.fetch_snapshot(
+                code, db_path=db_path, client=client, persist=True, provider=provider
+            )
+            # Back-end share classes have no standalone Eastmoney
+            # page; treat "no snapshot available" (None or empty dict)
+            # as a soft skip rather than aborting the whole sync.
+            snapshot_count = 1 if snapshot else 0
+            rows_changed += snapshot_count
 
         profile_count = 0
         profile: dict[str, Any] | None = None
@@ -358,6 +363,7 @@ def batch_sync_funds(
     per: int = 50,
     db_path: str | Path | None = None,
     provider: str = PROVIDER_AUTO,
+    include_snapshots: bool = True,
     include_holdings: bool = False,
     include_profile: bool = False,
     include_bonds: bool = False,
@@ -387,6 +393,8 @@ def batch_sync_funds(
     if min_interval_seconds is None:
         min_interval_seconds = 0.25 if concurrency > 1 else 1.0
 
+    if include_all:
+        include_snapshots = True
     sync_kwargs: dict[str, Any] = {
         "start_date": start_date,
         "end_date": end_date,
@@ -394,6 +402,7 @@ def batch_sync_funds(
         "per": per,
         "db_path": db_path,
         "provider": provider,
+        "include_snapshots": include_snapshots,
         "include_holdings": include_holdings,
         "include_profile": include_profile,
         "include_bonds": include_bonds,

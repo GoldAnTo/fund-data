@@ -294,6 +294,12 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--include-fees", action="store_true")
     sync.add_argument("--include-distributions", action="store_true")
     sync.add_argument("--include-managers", action="store_true")
+    sync.add_argument(
+        "--include-snapshots",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Pull the snapshot row (default: True).",
+    )
     sync.add_argument("--include-all", action="store_true")
     sync.add_argument("--report-year")
     sync.add_argument("--fee-indicator", action="append")
@@ -316,6 +322,17 @@ def build_parser() -> argparse.ArgumentParser:
     batch_sync.add_argument("--include-fees", action="store_true")
     batch_sync.add_argument("--include-distributions", action="store_true")
     batch_sync.add_argument("--include-managers", action="store_true")
+    # ``sync_fund`` already pulls the snapshot row on every call;
+    # this flag is the explicit opt-out so the OpenClaw completion
+    # plan builder can match the real CLI contract. Default True
+    # keeps the historical behaviour: every batch-sync refreshes
+    # the snapshot row alongside nav_history.
+    batch_sync.add_argument(
+        "--include-snapshots",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Pull snapshot rows during batch sync (default: True).",
+    )
     batch_sync.add_argument("--include-all", action="store_true")
     batch_sync.add_argument("--report-year")
     batch_sync.add_argument("--fee-indicator", action="append")
@@ -753,6 +770,7 @@ def main(argv: list[str] | None = None) -> int:
                 per=args.per,
                 db_path=args.db,
                 provider=args.provider,
+                include_snapshots=getattr(args, "include_snapshots", True),
                 include_holdings=args.include_holdings,
                 include_profile=args.include_profile,
                 include_bonds=args.include_bonds,
@@ -783,6 +801,7 @@ def main(argv: list[str] | None = None) -> int:
                 per=args.per,
                 db_path=args.db,
                 provider=args.provider,
+                include_snapshots=args.include_snapshots,
                 include_holdings=args.include_holdings,
                 include_profile=args.include_profile,
                 include_bonds=args.include_bonds,
