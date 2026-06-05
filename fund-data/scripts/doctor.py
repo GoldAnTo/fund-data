@@ -64,7 +64,7 @@ load_env()
 DEFAULT_DB_PATH = SCRIPT_DIR.parent / "data" / "fund_data.sqlite"
 DEFAULT_VENV = SCRIPT_DIR.parent.parent / ".venv-akshare"
 DEFAULT_BACKFILL_STATE = SCRIPT_DIR.parent / "data" / "backfill_state.json"
-DEFAULT_STALE_HOURS = 24.0
+DEFAULT_STALE_HOURS = 72.0
 
 # Tables that must exist for doctor to consider the database
 # usable. The query-only cloud bundle excludes the operator-side
