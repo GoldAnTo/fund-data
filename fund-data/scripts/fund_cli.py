@@ -586,6 +586,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         help="Write the JSON result to this file instead of stdout.",
     )
+    pull.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-download the query bundle even when the local cache matches the remote manifest.",
+    )
 
     status = cloud_subparsers.add_parser("status", help="Show local cloud cache status")
     status.add_argument(
@@ -1027,6 +1032,7 @@ def main(argv: list[str] | None = None) -> int:
                 payload = fund_cloud.pull_bundle(
                     args.manifest_url,
                     cache_dir=args.cache_dir,
+                    force=args.force,
                 )
                 if args.output:
                     _write_json_to_file(args.output, payload)

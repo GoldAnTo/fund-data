@@ -27,12 +27,14 @@ tools:
 Use this skill to turn ad hoc fund lookup into a repeatable local data workflow. The bundled Python scripts search funds, fetch core public fund data, store normalized rows in SQLite, and keep raw response snapshots for auditability.
 
 Agent default: before telling the user there is no local database or
-that only in-memory/live querying is available, run
-`python3 scripts/fund_cli.py cloud pull` or use the MCP tools. CLI,
-MCP, and direct Python helper calls default to the project OSS query
-bundle when `FUND_DATA_DB` is unset. Only fall back to live providers /
-API calls when OSS is unavailable, `FUND_DATA_AUTO_PULL=0`, or the user
-explicitly sets `FUND_DATA_DB` / `--db`.
+that only in-memory/live querying is available, inspect
+`python3 scripts/fund_cli.py cloud status` or use `fund_cloud_status`.
+Only run `python3 scripts/fund_cli.py cloud pull` when the cache is
+missing or stale. CLI, MCP, and direct Python helper calls default to
+the project OSS query bundle when `FUND_DATA_DB` is unset. Only fall
+back to live providers / API calls when OSS is unavailable,
+`FUND_DATA_AUTO_PULL=0`, or the user explicitly sets `FUND_DATA_DB` /
+`--db`.
 Historical NAV lookups are read-through: `fetch_nav_history` reads the
 resolved OSS/local SQLite `nav_history` table first, then refreshes from
 the provider chain only when rows are missing or stale. Use
@@ -46,8 +48,8 @@ The first version uses no-key Eastmoney public endpoints and optional AkShare fa
 Resolve paths relative to this skill folder.
 
 ```bash
-python3 scripts/fund_cli.py cloud pull
 python3 scripts/fund_cli.py cloud status
+python3 scripts/fund_cli.py cloud pull
 python3 scripts/fund_cli.py list --provider auto --limit 20
 python3 scripts/fund_cli.py search 沪深300
 python3 scripts/fund_cli.py nav 110022 --start-date 2024-01-01 --end-date 2024-01-31
@@ -281,19 +283,22 @@ sees the new version.
 Install a released bundle locally from the project OSS bucket:
 
 ```bash
-python3 scripts/fund_cli.py cloud pull
 python3 scripts/fund_cli.py cloud status
+python3 scripts/fund_cli.py cloud pull
 ```
 
 When `FUND_DATA_DB` is unset, CLI and MCP data tools automatically try
 the project OSS manifest first (`FUND_DATA_MANIFEST_URL` overrides it).
 If the bundle is reachable, it is pulled into `~/.cache/fund-data/` and
-used before live providers. If OSS is unavailable, the tools fall back
-to the normal provider/API chain. Set `FUND_DATA_CACHE_DIR` to move the
-cache, `FUND_DATA_DB` to force a specific SQLite file, or
-`FUND_DATA_AUTO_PULL=0` to skip this OSS bootstrap. MCP clients can call
-`fund_cloud_status` before querying to check installed and remote
-versions.
+used before live providers. `cloud pull` is cache-aware: when the local
+cache already matches the remote manifest version and sha256, it returns
+`downloaded: false` and does not re-download the gzip. Pass
+`--force` only for CI integrity checks or a deliberate re-download. If
+OSS is unavailable, the tools fall back to the normal provider/API
+chain. Set `FUND_DATA_CACHE_DIR` to move the cache, `FUND_DATA_DB` to
+force a specific SQLite file, or `FUND_DATA_AUTO_PULL=0` to skip this
+OSS bootstrap. MCP clients can call `fund_cloud_status` before querying
+to check installed and remote versions.
 
 For private full-database backup, archive the complete SQLite separately:
 
@@ -324,8 +329,8 @@ runs a four-step data-plane health gate every night at
    query db + sha256 + manifest
 3. `fund_cli.py cloud upload` — pushes the release to OSS via
    ossutil
-4. `fund_cli.py cloud pull` — pulls the just-uploaded manifest
-   down and verifies the sha256 against step 2
+4. `fund_cli.py cloud pull --force` — re-downloads the
+   just-uploaded bundle and verifies the sha256 against step 2
 
 The runner distinguishes **transient** failures (ossutil 5xx,
 SSL blip, timeout — retried up to 3x with 60s/120s/240s

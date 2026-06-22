@@ -19,7 +19,7 @@
 
 ## 60 秒答案（TL;DR）
 
-`fund-data` 的 cloud bundle 是 **fresh OpenClaw / Codex / Claude daemon 的分发路径**。它是一个 gzip 过的 query-only SQLite（11 个数据表，~700 MB gzipped）加上一个带 sha256 的 manifest，托管在公共 OSS bucket 上。Pull 是个信任链：HTTPS 拉 manifest → 校验 schema 版本 → 下载 .gz → 校验 sha256 → gunzip → atomic rename → 写 `current.json` 指针。Build 是镜像：attach 源 SQLite，用 `INSERT ... SELECT` 复制 11 个表，gzip，写 manifest，按 `gz → sha256 → manifest` 顺序上传三件 artifact 到 OSS，这样 poll `current/manifest.json` 的消费者永远看不到半发布的发布。
+`fund-data` 的 cloud bundle 是 **fresh OpenClaw / Codex / Claude daemon 的分发路径**。它是一个 gzip 过的 query-only SQLite（11 个数据表）加上一个带 sha256 的 manifest，托管在公共 OSS bucket 上。Pull 是个信任链：HTTPS 拉 manifest → 校验 schema 版本 → 如果本地 version/sha256 已匹配则复用 cache，否则下载 .gz → 校验 sha256 → gunzip → atomic rename → 写 `current.json` 指针。Build 是镜像：attach 源 SQLite，用 `INSERT ... SELECT` 复制 11 个表，gzip，写 manifest，按 `gz → sha256 → manifest` 顺序上传三件 artifact 到 OSS，这样 poll `current/manifest.json` 的消费者永远看不到半发布的发布。
 
 定义性特征：
 
@@ -45,7 +45,7 @@
 
 ### 第 3 段 —— Pull 侧
 
-> 消费者侧，任何不带显式 `db` 参数的 tool 调用触发 `_maybe_bootstrap_cloud`，它调 `ensure_project_bundle`。那个函数是个 5 步 gate：如果设了 `FUND_DATA_DB`，skip；如果 `FUND_DATA_AUTO_PULL=0`，skip 并返回 `fallback: "api"`；如果 `current.json` 存在且指向一个现有文件，复用 cache；否则调 `pull_bundle(manifest_url)`。`pull_bundle` 读 manifest，验证 `kind` / `version` / `schema_version` / `files.query_db.{sha256,url|path}`，下载 .gz 到 `.download` 文件，sha256 验证（对 manifest），gunzip 到 `.download` db，然后 `os.replace` 两个到最终路径。以原子方式写 `current.json`，带版本指针。
+> 消费者侧，任何不带显式 `db` 参数的 tool 调用触发 `_maybe_bootstrap_cloud`，它调 `ensure_project_bundle`。那个函数是个 5 步 gate：如果设了 `FUND_DATA_DB`，skip；如果 `FUND_DATA_AUTO_PULL=0`，skip 并返回 `fallback: "api"`；如果 `current.json` 存在且指向一个现有文件，复用 cache；否则调 `pull_bundle(manifest_url)`。`pull_bundle` 读 manifest，验证 `kind` / `version` / `schema_version` / `files.query_db.{sha256,url|path}`；如果本地 cache 的 version 和 sha256 已经匹配，直接返回 `downloaded: false`；否则下载 .gz 到 `.download` 文件，sha256 验证（对 manifest），gunzip 到 `.download` db，然后 `os.replace` 两个到最终路径。以原子方式写 `current.json`，带版本指针。
 
 ### 第 4 段 —— Status 和隐私边界
 
@@ -104,6 +104,8 @@
 
 ### Q8. 为什么 `pull_bundle` 每次重新读 manifest，而不是缓存 manifest 内容？
 
+- **Manifest 很小，query.gz 很大。** 现在 `cloud pull` 每次只重新读 manifest；如果本地 cache 的 `version` 和 `sha256` 已匹配，就不会重下 gzip。需要重新下载同一版本做完整链路校验时，显式传 `cloud pull --force`。
+
 - **Manifest 在 pull 之间可能变。** 发布者上传新 `manifest.json` 来宣传新版本。缓存 manifest 的消费者在 cache 被失效之前会错过新版本。
 - **Manifest 很小**（几 KB）。网络重读成本亚秒级；验证成本微秒级。缓存会每次 pull 省几百毫秒，代价是正确性。
 - **Manifest 是版本指针。** 读 `current/manifest.json` 然后拉引用的 `.gz` 的消费者在跟一个标准 CDN 模式走：一个小的"什么可用"文件 + 一个大的"我实际想要"文件。不必要地缓存小文件让标准模式复杂化。
@@ -156,7 +158,7 @@
 - **"就 `wget` .gz。"** 没 manifest 就没法知道最新版本或验证 sha256。Pull 路径（`fund-cli cloud pull` 或进程内 bootstrap）是下载的唯一正确方式。
 - **"Bundle 含审计表。"** 不含。`raw_responses` 因隐私被排除（`X-Forwarded-For` 可能含调用方 IP）；`sync_runs` 和 `sync_failures` 因是 operator telemetry 被排除。想要 audit trail 的消费者跑 `cloud archive-full` 然后私有存结果。
 - **"你可以在同一源上重跑 build 拿相同三件 artifact。"** 差不多。`updated_at` 字段是 `datetime.now(UTC)` 跑跟跑之间会变。其他（.gz 的 sha256、per-table 行数）在同一源状态下是确定性的。
-- **"Pull 是 async 的。"** 不是。`cloud pull` CLI 命令（和进程内 `ensure_project_bundle`）是阻塞操作，下载、验证、gunzip、写 `current.json` 然后才返回。前台跑 pull 的 agent 会阻塞 ~30-60 秒；后台跑 pull 的 agent 需要 poll `current.json` 等完成。
+- **"Pull 是 async 的。"** 不是。`cloud pull` CLI 命令（和进程内 `ensure_project_bundle`）是阻塞操作；如果本地 cache 已匹配，读 manifest 后直接返回；如果需要下载，则下载、验证、gunzip、写 `current.json` 然后才返回。前台跑需要下载的 pull 会阻塞几十秒；后台跑 pull 的 agent 需要 poll `current.json` 等完成。
 - **"`-f` 对 `ossutil cp` 是可选的。"** 不是。没 `-f`，ossutil 在已有 key 上提示 "y or N"；在非交互 shell 里，提示是隐形的，upload 静默 no-op。`cloud upload` subcommand 传 `-f`；subcommand 之外的 `ossutil cp` 手动调用必须也这样。
 - **"Bucket 是私有的。"** Query bundle 在 `fund-data-public-l`，是公开读 bucket。Full archive 发到 `fund-data-private`（或私有 prefix）；把 full archive 发到公共 bucket 是数据泄漏，不是配置错误。
 - **"你可以把 `FUND_DATA_MANIFEST_URL` 指向 `file://` URL。"** 你可以（`_open_location` 处理 `file` scheme），但不是支持的配置。Manifest 期望 HTTPS 可达；`file://` 路径是实现细节可能变。

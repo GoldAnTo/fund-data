@@ -169,6 +169,57 @@ class FundCloudBundleTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"FUND_DATA_CACHE_DIR": str(cache_dir)}, clear=False):
                 self.assertEqual(fund_data.default_db_path(), current_db)
 
+    def test_pull_bundle_skips_download_when_local_cache_matches_manifest(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_db = self._source_db(tmpdir)
+            release_dir = Path(tmpdir) / "remote" / "releases" / "2026-06-01"
+            build = fund_cloud.build_bundle(
+                source_db=source_db,
+                output_dir=release_dir,
+                base_url=release_dir.as_uri() + "/",
+                version="2026-06-01",
+            )
+            cache_dir = Path(tmpdir) / "cache"
+            fund_cloud.pull_bundle(build["manifest_path"].as_uri(), cache_dir=cache_dir)
+
+            with mock.patch.object(
+                fund_cloud, "_download", side_effect=AssertionError("should not download")
+            ):
+                result = fund_cloud.pull_bundle(
+                    build["manifest_path"].as_uri(),
+                    cache_dir=cache_dir,
+                )
+
+        self.assertTrue(result["installed"])
+        self.assertEqual(result["version"], "2026-06-01")
+        self.assertFalse(result["downloaded"])
+        self.assertEqual(result["source"], "cache")
+        self.assertEqual(result["skipped"], "local cache already matches remote manifest")
+
+    def test_pull_bundle_force_downloads_even_when_cache_matches_manifest(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_db = self._source_db(tmpdir)
+            release_dir = Path(tmpdir) / "remote" / "releases" / "2026-06-01"
+            build = fund_cloud.build_bundle(
+                source_db=source_db,
+                output_dir=release_dir,
+                base_url=release_dir.as_uri() + "/",
+                version="2026-06-01",
+            )
+            cache_dir = Path(tmpdir) / "cache"
+            fund_cloud.pull_bundle(build["manifest_path"].as_uri(), cache_dir=cache_dir)
+
+            with mock.patch.object(fund_cloud, "_download", wraps=fund_cloud._download) as mock_download:
+                result = fund_cloud.pull_bundle(
+                    build["manifest_path"].as_uri(),
+                    cache_dir=cache_dir,
+                    force=True,
+                )
+
+        mock_download.assert_called_once()
+        self.assertTrue(result["downloaded"])
+        self.assertEqual(result["source"], "oss")
+
     def test_pull_bundle_rejects_sha256_mismatch(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source_db = self._source_db(tmpdir)
@@ -366,8 +417,31 @@ class CloudCliSubcommandTests(unittest.TestCase):
             exit_code = fund_cli.main(["cloud", "pull"])
 
         self.assertEqual(exit_code, 0)
-        mock_pull.assert_called_once_with(fund_cloud.default_manifest_url(), cache_dir=None)
+        mock_pull.assert_called_once_with(
+            fund_cloud.default_manifest_url(),
+            cache_dir=None,
+            force=False,
+        )
         self.assertEqual(json.loads(stdout.getvalue()), payload)
+
+    def test_pull_force_flag_forwards_to_cloud_layer(self):
+        payload = {
+            "installed": True,
+            "cache_dir": "/tmp/fund-data-cache",
+            "db_path": "/tmp/fund-data-cache/query.sqlite",
+            "version": "v1",
+        }
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            fund_cli.fund_cloud, "pull_bundle", return_value=payload
+        ) as mock_pull, mock.patch("sys.stdout", new=io.StringIO()):
+            exit_code = fund_cli.main(["cloud", "pull", "--force"])
+
+        self.assertEqual(exit_code, 0)
+        mock_pull.assert_called_once_with(
+            fund_cloud.default_manifest_url(),
+            cache_dir=None,
+            force=True,
+        )
 
     def test_build_bundle_end_to_end_with_output_file(self):
         # Confirm the --output flag round-trips through the CLI

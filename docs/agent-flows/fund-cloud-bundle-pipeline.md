@@ -60,7 +60,8 @@ flowchart TD
     C7 -- no  --> C9[default_manifest_url<br/>FUND_DATA_MANIFEST_URL or<br/>oss-cn-shanghai bucket]
     C9 --> C10[pull_bundle manifest_url]
     C10 --> C11[_read_bytes manifest<br/>_validate_manifest]
-    C11 -- ok --> C12[_download archive to .download]
+    C11 -- local version/sha match --> C19[Return cache<br/>downloaded=false]
+    C11 -- needs update or force --> C12[_download archive to .download]
     C12 --> C13[_sha256_file .download]
     C13 -- match --> C14[_gunzip_file to .download db]
     C14 --> C15[os.replace both → final paths]
@@ -70,6 +71,7 @@ flowchart TD
 
     C8 --> S1[Status available via fund_cloud_status MCP tool]
     C17 --> S1
+    C19 --> S1
 ```
 
 ## 2. End-to-end flow (ASCII fallback)
@@ -167,16 +169,18 @@ pull_bundle(manifest_url, cache_dir) — fund_cloud.py:200
         file_info.url  if set
         else: urljoin(_manifest_base_url(manifest_url), file_info.path)
   ④ mkdir cache_dir/releases/<safe_version>/
-  ⑤ _download(archive_url, archive_path.download)
-  ⑥ _sha256_file(archive.download) == expected
+  ⑤ if local current.json version + sha256 already match:
+        return status(cache_dir) with downloaded=false
+  ⑥ _download(archive_url, archive_path.download)
+  ⑦ _sha256_file(archive.download) == expected
         mismatch → unlink .download, raise ValueError
-  ⑦ _gunzip_file(archive.download, db_path.download)
-  ⑧ os.replace(archive.download → archive_path)   # atomic
-  ⑨ os.replace(db.download → db_path)               # atomic
-  ⑩ write current.json atomically:
+  ⑧ _gunzip_file(archive.download, db_path.download)
+  ⑨ os.replace(archive.download → archive_path)   # atomic
+  ⑩ os.replace(db.download → db_path)               # atomic
+  ⑪ write current.json atomically:
         version / schema_version / installed_at / manifest_url
         manifest / db_path / archive_path / sha256 / sizes
-  ⑪ return status(cache_dir)
+  ⑫ return status(cache_dir) with downloaded=true
 
 status(cache_dir, manifest_url=None) — fund_cloud.py:250
 ───────────────────────────────────────────────────────
@@ -304,7 +308,7 @@ copy** with these properties:
 
 `fund-data/scripts/fund_cloud.py:200-247`
 
-The pull is a **trust chain** with three verification
+The pull is a **trust chain** with a cache-aware fast path and three verification
 points:
 
 1. **Manifest signature** — `_validate_manifest` checks
@@ -323,6 +327,12 @@ points:
    `sha256` field. A mismatch raises `ValueError` and
    deletes the partial download. This is the
    tamper-evidence guarantee.
+
+Before the heavy archive download, `pull_bundle` compares the local
+`current.json` version and sha256 with the remote manifest. If both
+match and `--force` is not set, it returns `downloaded: false` and
+reuses the local SQLite. `cloud pull --force` preserves the old
+behaviour for CI integrity checks or deliberate re-downloads.
 
 The download itself uses **two-phase atomic writes**:
 `.download` files for both the .gz and the .db, then
@@ -427,7 +437,7 @@ transition rewrites it atomically.
 | Which bucket / region / prefix? | `fund-data-public-l` / `cn-shanghai` / `fund-data` | `fund-cli cloud upload --bucket --region --prefix` | Used by `cloud upload` only. |
 | Is the upload dry-run? | No (real `ossutil cp -f`) | `--dry-run` | Prints the ossutil commands without executing. |
 | Should the install include raw_responses? | No (excluded from query bundle) | `--include-data` on `install_skill.py` | Independent of the bundle; install-side scrub. |
-| Should I re-pull? | `cloud pull` re-checks manifest | Manual `cloud status --manifest-url ...` first | `update_available: true` means a new version exists. |
+| Should I re-pull? | `cloud pull` re-checks manifest and skips the gzip when local version/sha match | `cloud pull --force` | Use `--force` only for deliberate re-download / CI integrity verification. |
 | Which OSS subcommand? | `cloud build-bundle` + `cloud upload` | `cloud archive-full` (for private full DB) | Query bundle is public; full archive is private. |
 
 ---
@@ -541,7 +551,8 @@ curl -sI https://fund-data-public-l.oss-cn-shanghai.aliyuncs.com/fund-data/curre
 ### 6.2 Agent / daemon pulls the latest bundle
 
 ```bash
-# 1. Trigger the bootstrap (skipped if FUND_DATA_DB set)
+# 1. Inspect first; then pull only if missing/stale. Matching cache returns downloaded=false.
+fund-cli cloud status
 fund-cli cloud pull
 
 # 2. Inspect

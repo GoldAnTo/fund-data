@@ -201,6 +201,7 @@ def pull_bundle(
     manifest_url: str,
     *,
     cache_dir: str | Path | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     manifest = json.loads(_read_bytes(manifest_url).decode("utf-8"))
     _validate_manifest(manifest)
@@ -220,6 +221,29 @@ def pull_bundle(
     archive_tmp = release_dir / f"{QUERY_ARCHIVE_NAME}.download"
     db_path = release_dir / QUERY_DB_NAME
     db_tmp = release_dir / f"{QUERY_DB_NAME}.download"
+
+    local = status(cache_dir=cache_path)
+    if (
+        not force
+        and local.get("installed")
+        and local.get("version") == version
+        and str(local.get("sha256", "")).lower() == expected_sha
+        and local.get("db_path")
+        and Path(str(local["db_path"])).is_file()
+    ):
+        local.update({
+            "manifest_url": manifest_url,
+            "remote_version": version,
+            "remote_updated_at": manifest.get("updated_at"),
+            "remote_schema_version": manifest.get("schema_version"),
+            "remote_query_db_size_bytes": file_info.get("size_bytes"),
+            "remote_query_db_sha256": expected_sha,
+            "update_available": False,
+            "downloaded": False,
+            "source": "cache",
+            "skipped": "local cache already matches remote manifest",
+        })
+        return local
 
     _download(archive_url, archive_tmp)
     actual_sha = _sha256_file(archive_tmp)
@@ -244,7 +268,20 @@ def pull_bundle(
         "db_size_bytes": db_path.stat().st_size,
     }
     _write_json_atomic(cache_path / CURRENT_METADATA_NAME, metadata)
-    return status(cache_dir=cache_path)
+    result = status(cache_dir=cache_path)
+    result.update({
+        "manifest_url": manifest_url,
+        "remote_version": version,
+        "remote_updated_at": manifest.get("updated_at"),
+        "remote_schema_version": manifest.get("schema_version"),
+        "remote_query_db_size_bytes": file_info.get("size_bytes"),
+        "remote_query_db_sha256": expected_sha,
+        "update_available": False,
+        "downloaded": True,
+        "source": "oss",
+        "skipped": None,
+    })
+    return result
 
 
 def status(

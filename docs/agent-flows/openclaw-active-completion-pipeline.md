@@ -7,7 +7,7 @@ priorities, budgets, locking, audit logs, and the publish gate.
 ## The Loop
 
 ```text
-cloud status / pull
+cloud status / pull-if-needed
     -> self-audit (fund_self_audit)
     -> completion-plan (fund_completion_plan)
     -> [approval gate]
@@ -37,7 +37,7 @@ prompts to enforce mode — the project runner is the gate.
 .venv-akshare/bin/python fund-data/scripts/fund_cli.py cloud status
 .venv-akshare/bin/python fund-data/scripts/doctor.py --skip-network --quiet
 
-# 2. Refresh cache if stale.
+# 2. Refresh cache if missing/stale. Matching cache returns downloaded=false.
 .venv-akshare/bin/python fund-data/scripts/fund_cli.py cloud pull
 
 # 3. Build the priority queue.

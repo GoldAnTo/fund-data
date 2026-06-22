@@ -112,6 +112,16 @@ ossutil du oss://fund-data-public-l/fund-data/ -v
 #    需要 RAM AccessKey 权限 oss:GetBucketStat
 ```
 
+已实现的低成本止血项：
+
+- `cloud pull` 现在会先读远端 manifest。若本地 `current.json`
+  的 version 和 sha256 已匹配，直接返回 `downloaded: false`，
+  不再重复下载整个 `fund_data_query.sqlite.gz`。
+- 需要重新下载同一版本做 CI / 人工完整校验时，显式使用
+  `cloud pull --force`。
+- Agent / OpenClaw 提示词应先调用 `cloud status` 或
+  `fund_cloud_status`，再按需 `cloud pull`。
+
 ---
 
 **TL;DR：当前月费用 ~¥0.89，触发优化需要 agent 规模 / 频次显著增长。现在不动。**

@@ -52,17 +52,20 @@ For OpenClaw, Codex, Claude, or any MCP-capable agent, prefer a
 lightweight skill install plus a cloud data cache:
 
 ```bash
-python3 scripts/fund_cli.py cloud pull
 python3 scripts/fund_cli.py cloud status
+python3 scripts/fund_cli.py cloud pull
 ```
 
-`cloud pull` downloads `fund_data_query.sqlite.gz`, verifies its
-SHA-256 from `manifest.json`, and installs it under
-`~/.cache/fund-data/releases/<version>/`. It defaults to the project
-OSS manifest (`FUND_DATA_MANIFEST_URL` overrides it). When
-`FUND_DATA_DB` is not set, CLI, MCP, and direct Python helper calls
-automatically prefer that cached query database over live providers.
-If OSS is unavailable, they fall back to the normal provider/API chain.
+`cloud status` is the cheap local inspection step. `cloud pull` reads
+the remote manifest and downloads `fund_data_query.sqlite.gz` only when
+the local cache is missing or its version/sha256 differs; it returns
+`downloaded: false` when the existing cache already matches. Use
+`cloud pull --force` only when CI or an operator deliberately wants to
+re-download and verify the gzip. The command defaults to the project OSS
+manifest (`FUND_DATA_MANIFEST_URL` overrides it). When `FUND_DATA_DB` is
+not set, CLI, MCP, and direct Python helper calls automatically prefer
+that cached query database over live providers. If OSS is unavailable,
+they fall back to the normal provider/API chain.
 
 To publish a new OSS release:
 

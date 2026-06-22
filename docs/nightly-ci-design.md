@@ -66,11 +66,11 @@ the alert hooks read.
 
 | # | Step | Command | Pass criteria |
 |---|------|---------|---------------|
-| 0 | **pre-flight: pull query DB** | `fund_cli.py cloud pull --cache-dir /tmp/nightly-cache --output /tmp/cloud-pull-init.json` | exit 0 AND `/tmp/nightly-cache/releases/<ver>/fund_data_query.sqlite` exists AND `current.json` pointer is updated |
+| 0 | **pre-flight: pull query DB** | `fund_cli.py cloud pull --cache-dir /tmp/nightly-cache --output /tmp/cloud-pull-init.json` | exit 0 AND `/tmp/nightly-cache/releases/<ver>/fund_data_query.sqlite` exists AND `current.json` pointer is updated. If the cache already matches, `downloaded=false` is acceptable. |
 | 1 | **doctor** | `fund_cli.py doctor --skip-network --skip-sync-state --output /tmp/nightly-doctor.json` | exit 0 AND every `checks[*].ok == true` (note `--skip-sync-state` is required: the query DB excludes `raw_responses` / `sync_runs` / `sync_failures` per `fund_cloud.EXCLUDED_TABLES`) |
 | 2 | **build-bundle** | `fund_cli.py cloud build-bundle --source-db <from step 0> --output-dir /tmp/nightly-release --manifest-output /tmp/nightly-release/manifest.json --output /tmp/nightly-build.json` | exit 0 AND `manifest.query_db.sha256` is present |
 | 3 | **upload** | `fund_cli.py cloud upload --release-dir /tmp/nightly-release --manifest /tmp/nightly-release/manifest.json --output /tmp/nightly-upload.json` | exit 0 AND every `uploaded[*].remote` is on `oss://fund-data-public-l/` |
-| 4 | **pull-and-verify** | `fund_cli.py cloud pull --manifest-url <manifest_url> --cache-dir /tmp/nightly-cache --output /tmp/nightly-pull.json` | exit 0 AND `pull.integrity_verified == true` AND `pull.sha256 == step 2 sha256` |
+| 4 | **pull-and-verify** | `fund_cli.py cloud pull --force --manifest-url <manifest_url> --cache-dir /tmp/nightly-cache --output /tmp/nightly-pull.json` | exit 0 AND `pull.downloaded == true` AND `pull.sha256 == step 2 sha256` |
 
 **Why a pre-flight is required**: the runner starts on a
 clean checkout with no `fund_data.sqlite` on disk. The 5.4 GB
