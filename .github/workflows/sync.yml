@@ -46,7 +46,7 @@ jobs:
     env:
       FUND_DATA_DB: fund-data/data/fund_data.sqlite
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Python
         uses: actions/setup-python@v6
